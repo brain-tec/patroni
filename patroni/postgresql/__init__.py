@@ -327,6 +327,9 @@ class Postgresql(object):
         if cluster and cluster.config and cluster.config.modify_index:
             self._has_permanent_logical_slots =\
                 cluster.has_permanent_logical_slots(self.name, nofailover, self.major_version)
+
+            # We want to enable hot_standby_feedback if the replica is supposed
+            # to have a logical slot or in case if it is the cascading replica.
             self.set_enforce_hot_standby_feedback(
                 self._has_permanent_logical_slots or
                 cluster.should_enforce_hot_standby_feedback(self.name, nofailover, self.major_version))
@@ -338,7 +341,9 @@ class Postgresql(object):
                 cluster_info_state = dict(zip(['timeline', 'wal_position', 'replayed_location',
                                                'received_location', 'replay_paused', 'pg_control_timeline',
                                                'received_tli', 'slot_name', 'conninfo', 'slots'], result))
-                cluster_info_state['slots'] = self.slots_handler.process_permanent_slots(cluster_info_state['slots'])
+                if self._has_permanent_logical_slots:
+                    cluster_info_state['slots'] =\
+                        self.slots_handler.process_permanent_slots(cluster_info_state['slots'])
                 self._cluster_info_state = cluster_info_state
             except RetryFailedError as e:  # SELECT failed two times
                 self._cluster_info_state = {'error': str(e)}
@@ -1107,11 +1112,12 @@ class Postgresql(object):
                 " ORDER BY sync_state DESC, {0}_{1} DESC".format(sort_col, self.lsn_name, self.wal_name)):
             member = members.get(app_name)
             if member and not member.tags.get('nosync', False):
-                replica_list.append((member.name, sync_state, replica_lsn))
+                replica_list.append((member.name, sync_state, replica_lsn, bool(member.nofailover)))
 
         max_lsn = max(replica_list, key=lambda x: x[2])[2] if len(replica_list) > 1 else int(str(self.last_operation()))
 
-        for app_name, sync_state, replica_lsn in replica_list:
+        # Prefer members without nofailover tag. We are relying on the fact that sorts are guaranteed to be stable.
+        for app_name, sync_state, replica_lsn, _ in sorted(replica_list, key=lambda x: x[3]):
             if sync_node_maxlag <= 0 or max_lsn - replica_lsn <= sync_node_maxlag:
                 candidates.append(app_name)
                 if sync_state == 'sync':
