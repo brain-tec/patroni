@@ -160,7 +160,7 @@ class Member(namedtuple('Member', 'index,name,session,data')):
         defaults = {
             "host": None,
             "port": None,
-            "database": None
+            "dbname": None
         }
         ret = self.data.get('conn_kwargs')
         if ret:
@@ -174,7 +174,7 @@ class Member(namedtuple('Member', 'index,name,session,data')):
             ret = {
                 'host': r.hostname,
                 'port': r.port or 5432,
-                'database': r.path[1:]
+                'dbname': r.path[1:]
             }
             self.data['conn_kwargs'] = ret.copy()
 
@@ -499,7 +499,7 @@ class Cluster(namedtuple('Cluster', 'initialize,config,leader,last_lsn,members,f
 
     @property
     def use_slots(self):
-        return self.config and self.config.data.get('postgresql', {}).get('use_slots', True)
+        return self.config and (self.config.data.get('postgresql') or {}).get('use_slots', True)
 
     def get_replication_slots(self, my_name, role, nofailover, major_version, show_error=False):
         # if the replicatefrom tag is set on the member - we should not create the replication slot for it on
