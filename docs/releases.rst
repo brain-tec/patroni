@@ -18,7 +18,7 @@ Version 2.1.3
 
 - Make it possible to specify multiple hosts in the standby cluster configuration (Michael Banck)
 
-  If the standby cluster is replicating from the Patroni cluster it might be nice to rely on the client-side failover which is available in the ``libpq`` since PostgreSQL v10. That is, the ``primary_conninfo`` on the standby leader and ``pg_rewind`` will set ``target_session_attrs=read-write`` in the connection string, the ``pgpass`` file will be generated with multiple lines (one line per host), and instead of calling the ``CHECKPOINT`` on the primary cluster nodes in the standby cluster will wait for a ``pg_control`` to be updated instead.
+  If the standby cluster is replicating from the Patroni cluster it might be nice to rely on client-side failover which is available in ``libpq`` since PostgreSQL v10. That is, the ``primary_conninfo`` on the standby leader and ``pg_rewind`` setting ``target_session_attrs=read-write`` in the connection string. The ``pgpass`` file will be generated with multiple lines (one line per host), and instead of calling ``CHECKPOINT`` on the primary cluster nodes the standby cluster will wait for ``pg_control`` to be updated.
 
 **Stability improvements**
 
@@ -32,13 +32,13 @@ Version 2.1.3
 
 - Don't remove the leader lock in the standby cluster while paused (Alexander)
 
-  Previously the lock was maintained only the node that is running as a primary.
+  Previously the lock was maintained only by the node that was running as a primary and not a standby leader.
 
 **Bugfixes**
 
 - Fixed bug in the standby-leader bootstrap (Alexander)
 
-  Paroni was considering bootstrap as failed if Postgres didn't start accepting connections after 60 seconds. The bug was introduced in the 2.1.2
+  Patroni was considering bootstrap as failed if Postgres didn't start accepting connections after 60 seconds. The bug was introduced in the 2.1.2 release.
 
 - Fixed bug with failover to a cascading standby (Alexander)
 
@@ -52,17 +52,21 @@ Version 2.1.3
 
   It could be that the ``remove_data_directory_on_diverged_timelines`` is set, but there is no ``rewind_credentials`` defined and superuser access between nodes is not allowed.
 
-- Fixed port in use error on REST API certificate replacement (Ants Aasma)
+- Fixed "port in use" error on REST API certificate replacement (Ants Aasma)
 
   When switching certificates there was a race condition with a concurrent API request. If there is one active during the replacement period then the replacement will error out with a port in use error and Patroni gets stuck in a state without an active API server.
 
-- Fixed a bug in cluster bootstrap if passwords containing ``%`` characters (Bastien Wirtz)
+- Fixed a bug in cluster bootstrap if passwords contain ``%`` characters (Bastien Wirtz)
 
   The bootstrap method executes the ``DO`` block, with all parameters properly quoted, but the ``cursor.execute()`` method didn't like an empty list with parameters passed.
 
-- Fixed the ``AttributeError`` no attribute 'leader' exception (Hrvoje Milković)
+- Fixed the "AttributeError: no attribute 'leader'" exception (Hrvoje Milković)
 
   It could happen if the synchronous mode is enabled and the DCS content was wiped out.
+
+- Fix bug in divergence timeline check (Alexander)
+
+  Patroni was falsely assuming that timelines have diverged. For pg_rewind it didn't create any problem, but if pg_rewind is not allowed and the ``remove_data_directory_on_diverged_timelines`` is set, it resulted in reinitializing the former leader.
 
 
 Version 2.1.2
