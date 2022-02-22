@@ -796,7 +796,7 @@ class Ha(object):
 
         # When in sync mode, only last known master and sync standby are allowed to promote automatically.
         all_known_members = self.cluster.members + self.old_cluster.members
-        if self.is_synchronous_mode() and self.cluster.sync.leader:
+        if self.is_synchronous_mode() and self.cluster.sync and self.cluster.sync.leader:
             if not self.cluster.sync.matches(self.state_handler.name):
                 return False
             # pick between synchronous candidates so we minimize unnecessary failovers/demotions
@@ -1012,8 +1012,9 @@ class Ha(object):
                 if self.cluster.failover and self.cluster.failover.candidate == self.state_handler.name:
                     return 'waiting to become master after promote...'
 
-                self._delete_leader()
-                return 'removed leader lock because postgres is not running as master'
+                if not self.is_standby_cluster():
+                    self._delete_leader()
+                    return 'removed leader lock because postgres is not running as master'
 
             if self.update_lock(True):
                 msg = self.process_manual_failover_from_leader()

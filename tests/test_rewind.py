@@ -102,6 +102,11 @@ class TestRewind(BaseTestPostgresql):
     @patch.object(Postgresql, 'start', Mock())
     def test_execute(self, mock_checkpoint):
         self.r.execute(self.leader)
+        with patch.object(Postgresql, 'major_version', PropertyMock(return_value=130000)):
+            self.r.execute(self.leader)
+            with patch.object(MockCursor, 'fetchone', Mock(side_effect=Exception)):
+                self.r.execute(self.leader)
+
         with patch.object(Rewind, 'pg_rewind', Mock(return_value=False)):
             mock_checkpoint.side_effect = ['1', '', '', '']
             self.r.execute(self.leader)
@@ -141,7 +146,10 @@ class TestRewind(BaseTestPostgresql):
         self.leader = self.leader.member
         self.assertFalse(self.r.rewind_or_reinitialize_needed_and_possible(self.leader))
         mock_check_leader_is_not_in_recovery.return_value = True
-        self.assertTrue(self.r.rewind_or_reinitialize_needed_and_possible(self.leader))
+        self.assertFalse(self.r.rewind_or_reinitialize_needed_and_possible(self.leader))
+        self.r.trigger_check_diverged_lsn()
+        with patch.object(MockCursor, 'fetchone', Mock(side_effect=[('', 3, '0/0'), ('', b'4\t0/40159C0\tn\n')])):
+            self.assertTrue(self.r.rewind_or_reinitialize_needed_and_possible(self.leader))
         self.r.reset_state()
         self.r.trigger_check_diverged_lsn()
         with patch('patroni.psycopg.connect', Mock(side_effect=Exception)):

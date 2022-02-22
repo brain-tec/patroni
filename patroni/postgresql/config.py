@@ -486,7 +486,8 @@ class ConfigHandler(object):
         # A list of keywords that can be found in a conninfo string. Follows what is acceptable by libpq
         keywords = ('dbname', 'user', 'passfile' if params.get('passfile') else 'password', 'host', 'port',
                     'sslmode', 'sslcompression', 'sslcert', 'sslkey', 'sslpassword', 'sslrootcert', 'sslcrl',
-                    'sslcrldir', 'application_name', 'krbsrvname', 'gssencmode', 'channel_binding')
+                    'sslcrldir', 'application_name', 'krbsrvname', 'gssencmode', 'channel_binding',
+                    'target_session_attrs')
         if include_dbname:
             params = params.copy()
             if 'dbname' not in params:
@@ -542,6 +543,12 @@ class ConfigHandler(object):
             if use_slots and not (is_remote_master and member.no_replication_slot):
                 primary_slot_name = member.primary_slot_name if is_remote_master else self._postgresql.name
                 recovery_params['primary_slot_name'] = slot_name_from_member_name(primary_slot_name)
+                # We are a standby leader and are using a replication slot. Make sure we connect to
+                # the leader of the main cluster (in case more than one host is specified in the
+                # connstr) by adding 'target_session_attrs=read-write' to primary_conninfo.
+                if is_remote_master and 'target_sesions_attrs' not in primary_conninfo and\
+                        self._postgresql.major_version >= 100000:
+                    primary_conninfo['target_session_attrs'] = 'read-write'
             recovery_params['primary_conninfo'] = primary_conninfo
 
         # standby_cluster config might have different parameters, we want to override them
@@ -618,19 +625,19 @@ class ConfigHandler(object):
 
     def _check_passfile(self, passfile, wanted_primary_conninfo):
         # If there is a passfile in the primary_conninfo try to figure out that
-        # the passfile contains the line allowing connection to the given node.
+        # the passfile contains the line(s) allowing connection to the given node.
         # We assume that the passfile was created by Patroni and therefore doing
         # the full match and not covering cases when host, port or user are set to '*'
         passfile_mtime = mtime(passfile)
         if passfile_mtime:
             try:
                 with open(passfile) as f:
-                    wanted_line = self._pgpass_line(wanted_primary_conninfo).strip()
-                    for raw_line in f:
-                        if raw_line.strip() == wanted_line:
-                            self._passfile = passfile
-                            self._passfile_mtime = passfile_mtime
-                            return True
+                    wanted_lines = self._pgpass_line(wanted_primary_conninfo).splitlines()
+                    file_lines = f.read().splitlines()
+                    if set(wanted_lines) == set(file_lines):
+                        self._passfile = passfile
+                        self._passfile_mtime = passfile_mtime
+                        return True
             except Exception:
                 logger.info('Failed to read %s', passfile)
         return False
@@ -745,7 +752,12 @@ class ConfigHandler(object):
                 return re.sub(r'([:\\])', r'\\\1', str(value))
 
             record = {n: escape(record.get(n) or '*') for n in ('host', 'port', 'user', 'password')}
-            return '{host}:{port}:*:{user}:{password}'.format(**record)
+            # 'host' could be several comma-separated hostnames, in this case
+            # we need to write on pgpass line per host
+            line = ''
+            for hostname in record.get('host').split(','):
+                line += hostname + ':{port}:*:{user}:{password}'.format(**record) + '\n'
+            return line.rstrip()
 
     def write_pgpass(self, record):
         line = self._pgpass_line(record)
