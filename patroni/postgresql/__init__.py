@@ -387,7 +387,7 @@ class Postgresql(object):
         self._query('SELECT pg_catalog.pg_{0}_replay_resume()'.format(self.wal_name))
 
     def handle_parameter_change(self):
-        if self.major_version >= 140000 and self.replay_paused():
+        if self.major_version >= 140000 and not self.is_starting() and self.replay_paused():
             logger.info('Resuming paused WAL replay for PostgreSQL 14+')
             self.resume_wal_replay()
 
@@ -798,7 +798,8 @@ class Postgresql(object):
         return True
 
     def get_guc_value(self, name):
-        cmd = [self.pgcommand('postgres'), '-D', self._data_dir, '-C', name]
+        cmd = [self.pgcommand('postgres'), '-D', self._data_dir, '-C', name,
+               '--config-file={}'.format(self.config.postgresql_conf)]
         try:
             data = subprocess.check_output(cmd)
             if data:
