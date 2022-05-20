@@ -307,7 +307,8 @@ class Ha(object):
 
         if self._rewind.can_rewind:
             # rewind is required, but postgres wasn't shut down cleanly.
-            if self.state_handler.controldata().get('Database cluster state') == 'in archive recovery':
+            if not self.state_handler.is_running() and \
+                    self.state_handler.controldata().get('Database cluster state') == 'in archive recovery':
                 msg = self._handle_crash_recovery()
                 if msg:
                     return msg
@@ -315,8 +316,7 @@ class Ha(object):
             msg = 'running pg_rewind from ' + leader.name
             return self._async_executor.try_run_async(msg, self._rewind.execute, args=(leader,)) or msg
 
-        # remove_data_directory_on_diverged_timelines is set
-        if not self.is_standby_cluster():
+        if self._rewind.should_remove_data_directory_on_diverged_timelines and not self.is_standby_cluster():
             msg = 'reinitializing due to diverged timelines'
             return self._async_executor.try_run_async(msg, self._do_reinitialize, args=(self.cluster,)) or msg
 
