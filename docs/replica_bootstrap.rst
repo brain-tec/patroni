@@ -187,6 +187,13 @@ Standby leader holds and updates a leader lock in DCS. If the leader lock
 expires, cascade replicas will perform an election to choose another leader
 from the standbys.
 
+There is no further relationship between the standby cluster and the primary
+cluster it replicates from, in particular, they must not share the same DCS
+scope if they use the same DCS. They do not know anything else from each other
+apart from replication information. Also, the standby cluster is not being
+displayed in ``patronictl list`` or ``patronictl topology`` output on the
+primary cluster.
+
 For the sake of flexibility, you can specify methods of creating a replica and
 recovery WAL records when a cluster is in the "standby mode" by providing
 `create_replica_methods` key in `standby_cluster` section. It is distinct from
@@ -211,5 +218,10 @@ in a patroni configuration:
 
 Note, that these options will be applied only once during cluster bootstrap,
 and the only way to change them afterwards is through DCS.
+
+Patroni expects to find `postgresql.conf` or `postgresql.conf.backup` in PGDATA
+of the remote master and will not start if it does not find it after a
+basebackup. If the remote master keeps its `postgresql.conf` elsewhere, it is
+your responsibility to copy it to PGDATA.
 
 If you use replication slots on the standby cluster, you must also create the corresponding replication slot on the primary cluster.  It will not be done automatically by the standby cluster implementation.  You can use Patroni's permanent replication slots feature on the primary cluster to maintain a replication slot with the same name as ``primary_slot_name``, or its default value if ``primary_slot_name`` is not provided.
