@@ -500,19 +500,23 @@ class Etcd3Controller(AbstractEtcdController):
             assert False, "exception when cleaning up etcd contents: {0}".format(e)
 
 
-class AbstractExternalController(AbstractDcsController):
+class AbstractExternalDcsController(AbstractDcsController):
+
+    def __init__(self, context, mktemp=True):
+        super(AbstractExternalDcsController, self).__init__(context, mktemp)
+        self._wrapper = ['sudo']
 
     def _start(self):
         return self._external_pid
 
     def start_outage(self):
         if not self._paused:
-            subprocess.call(['sudo', 'kill', '-SIGSTOP', self._external_pid])
+            subprocess.call(self._wrapper + ['kill', '-SIGSTOP', self._external_pid])
             self._paused = True
 
     def stop_outage(self):
         if self._paused:
-            subprocess.call(['sudo', 'kill', '-SIGCONT', self._external_pid])
+            subprocess.call(self._wrapper + ['kill', '-SIGCONT', self._external_pid])
             self._paused = False
 
     def _has_started(self):
@@ -532,7 +536,7 @@ class AbstractExternalController(AbstractDcsController):
         pass
 
 
-class KubernetesController(AbstractExternalController):
+class KubernetesController(AbstractExternalDcsController):
 
     def __init__(self, context):
         super(KubernetesController, self).__init__(context)
@@ -541,15 +545,41 @@ class KubernetesController(AbstractExternalController):
         self._label_selector = ','.join('{0}={1}'.format(k, v) for k, v in self._labels.items())
         os.environ['PATRONI_KUBERNETES_LABELS'] = json.dumps(self._labels)
         os.environ['PATRONI_KUBERNETES_USE_ENDPOINTS'] = 'true'
-        os.environ['PATRONI_KUBERNETES_BYPASS_API_SERVICE'] = 'true'
+        os.environ.setdefault('PATRONI_KUBERNETES_BYPASS_API_SERVICE', 'true')
 
         from patroni.dcs.kubernetes import k8s_client, k8s_config
-        k8s_config.load_kube_config(context='local')
+        k8s_config.load_kube_config(context=os.environ.setdefault('PATRONI_KUBERNETES_CONTEXT', 'kind-kind'))
         self._client = k8s_client
         self._api = self._client.CoreV1Api()
 
     def process_name(self):
         return "localkube"
+
+    def _is_running(self):
+        if not self._handle:
+            context = os.environ.get('PATRONI_KUBERNETES_CONTEXT')
+            if context.startswith('kind-'):
+                container = '{0}-control-plane'.format(context[5:])
+                api_process = 'kube-apiserver'
+            elif context.startswith('k3d-'):
+                container = '{0}-server-0'.format(context)
+                api_process = 'k3s'
+            else:
+                return super(KubernetesController, self)._is_running()
+            try:
+                docker = 'docker'
+                with open(os.devnull, 'w') as null:
+                    if subprocess.call([docker, 'info'], stdout=null, stderr=null) != 0:
+                        raise Exception
+            except Exception:
+                docker = 'podman'
+                with open(os.devnull, 'w') as null:
+                    if subprocess.call([docker, 'info'], stdout=null, stderr=null) != 0:
+                        raise Exception
+            self._wrapper = [docker, 'exec', container]
+            self._external_pid = subprocess.check_output(self._wrapper + ['pidof', api_process]).decode('utf-8').strip()
+            return False
+        return True
 
     def create_pod(self, name, scope):
         self.delete_pod(name)
@@ -602,7 +632,7 @@ class KubernetesController(AbstractExternalController):
                 break
 
 
-class ZooKeeperController(AbstractExternalController):
+class ZooKeeperController(AbstractExternalDcsController):
 
     """ handles all zookeeper related tasks, used for the tests setup and cleanup """
 
