@@ -102,7 +102,6 @@ class CitusHandler(Thread):
             self._in_flight = None
 
     def query(self, sql, *params):
-        cursor = None
         try:
             logger.debug('query(%s, %s)', sql, params)
             cursor = self._connection.cursor()
@@ -177,7 +176,7 @@ class CitusHandler(Thread):
                 i = self.find_task_by_group(self._in_flight.group)
             else:
                 while True:
-                    i = self.find_task_by_group(CITUS_COORDINATOR_GROUP_ID)  # set_coodinator
+                    i = self.find_task_by_group(CITUS_COORDINATOR_GROUP_ID)  # set_coordinator
                     if i is None and self._tasks:
                         i = 0
                     if i is None:
@@ -225,6 +224,10 @@ class CitusHandler(Thread):
         is controlled outside of this method."""
 
         if task.event == 'after_promote':
+            # The after_promote may happen without previous before_demote and/or
+            # before_promore.  In this case we just call self.update_node() method.
+            # If there is a transaction in progress, it could be that it already did
+            # required changes and we can simply COMMIT.
             if not self._in_flight or self._in_flight.host != task.host or self._in_flight.port != task.port:
                 self.update_node(task)
             if self._in_flight:
