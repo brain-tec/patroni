@@ -122,6 +122,7 @@ class SlotsHandler(object):
         self._advance = None
         self._replication_slots = {}  # already existing replication slots
         self._unready_logical_slots = {}
+        self.pg_replslot_dir = os.path.join(self._postgresql.data_dir, 'pg_replslot')
         self.schedule()
 
     def _query(self, sql, *params):
@@ -387,9 +388,8 @@ class SlotsHandler(object):
                 logger.error("Failed to copy logical slots from the %s via postgresql connection: %r", leader.name, e)
 
         if isinstance(create_slots, dict) and create_slots and self._postgresql.stop():
-            pg_replslot_dir = os.path.join(self._postgresql.data_dir, 'pg_replslot')
             for name, value in create_slots.items():
-                slot_dir = os.path.join(pg_replslot_dir, name)
+                slot_dir = os.path.join(self._postgresql.slots_handler.pg_replslot_dir, name)
                 slot_tmp_dir = slot_dir + '.tmp'
                 if os.path.exists(slot_tmp_dir):
                     shutil.rmtree(slot_tmp_dir)
@@ -404,7 +404,7 @@ class SlotsHandler(object):
                 os.rename(slot_tmp_dir, slot_dir)
                 fsync_dir(slot_dir)
                 self._unready_logical_slots[name] = None
-            fsync_dir(pg_replslot_dir)
+            fsync_dir(self._postgresql.slots_handler.pg_replslot_dir)
             self._postgresql.start()
 
     def schedule(self, value=None):

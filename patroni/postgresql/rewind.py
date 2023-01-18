@@ -12,6 +12,7 @@ from .connection import get_connection_cursor
 from .misc import format_lsn, parse_history, parse_lsn
 from ..async_executor import CriticalTask
 from ..dcs import Leader
+from .slots import fsync_dir
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +440,11 @@ class Rewind(object):
             return
 
         if self.pg_rewind(r):
+            # clean pg_replslot directory, as pg_rewind doesn't sync it only since pg11
+            if self._postgresql.major_version < 110000:
+                for f in os.listdir(self._postgresql.slots_handler.pg_replslot_dir):
+                    shutil.rmtree(os.path.join(self._postgresql.slots_handler.pg_replslot_dir, f))
+                fsync_dir(self._postgresql.slots_handler.pg_replslot_dir)
             self._state = REWIND_STATUS.SUCCESS
         else:
             if not self.check_leader_is_not_in_recovery(r):
