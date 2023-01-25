@@ -19,10 +19,11 @@ from .callback_executor import CallbackExecutor
 from .cancellable import CancellableSubprocess
 from .config import ConfigHandler, mtime
 from .connection import Connection, get_connection_cursor
+from .citus import CitusHandler
 from .misc import parse_history, parse_lsn, postgres_major_version_to_int
 from .postmaster import PostmasterProcess
 from .slots import SlotsHandler
-from .validator import CaseInsensitiveDict
+from .sync import SyncHandler
 from .. import psycopg
 from ..exceptions import PostgresConnectionException
 from ..utils import Retry, RetryFailedError, polling_loop, data_directory_is_empty, parse_int
@@ -76,6 +77,7 @@ class Postgresql(object):
 
         self._pending_restart = False
         self._connection = Connection()
+        self.citus_handler = CitusHandler(self, config.get('citus'))
         self.config = ConfigHandler(self, config)
         self.config.check_directories()
 
@@ -85,6 +87,7 @@ class Postgresql(object):
         self.__thread_ident = current_thread().ident
 
         self.slots_handler = SlotsHandler(self)
+        self.sync_handler = SyncHandler(self)
 
         self._callback_executor = CallbackExecutor()
         self.__cb_called = False
@@ -176,12 +179,12 @@ class Postgresql(object):
 
         extra = ", " + (("pg_catalog.current_setting('synchronous_commit'), " +
                          "pg_catalog.current_setting('synchronous_standby_names'), "
-                         "(SELECT pg_catalog.json_agg(r.*) FROM (SELECT application_name, sync_state," +
+                         "(SELECT pg_catalog.json_agg(r.*) FROM (SELECT w.pid as pid, application_name, sync_state," +
                          " pg_catalog.pg_{0}_{1}_diff(write_{1}, '0/0')::bigint AS write_lsn," +
                          " pg_catalog.pg_{0}_{1}_diff(flush_{1}, '0/0')::bigint AS flush_lsn," +
                          " pg_catalog.pg_{0}_{1}_diff(replay_{1}, '0/0')::bigint AS replay_lsn " +
                          "FROM pg_catalog.pg_stat_get_wal_senders() w," +
-                         " pg_catalog.pg_stat_get_activity(pid)" +
+                         " pg_catalog.pg_stat_get_activity(w.pid)" +
                          " WHERE w.state = 'streaming') r)").format(self.wal_name, self.lsn_name)
                         if self._is_synchronous_mode and self.role == 'master' else "'on', '', NULL")
 
@@ -282,7 +285,8 @@ class Postgresql(object):
         return self._connection.get()
 
     def set_connection_kwargs(self, kwargs):
-        self._connection.set_conn_kwargs(kwargs)
+        self._connection.set_conn_kwargs(kwargs.copy())
+        self.citus_handler.set_conn_kwargs(kwargs.copy())
 
     def _query(self, sql, *params):
         """We are always using the same cursor, therefore this method is not thread-safe!!!
@@ -402,6 +406,15 @@ class Postgresql(object):
 
     def received_timeline(self):
         return self._cluster_info_state_get('received_tli')
+
+    def synchronous_commit(self):
+        return self._cluster_info_state_get('synchronous_commit')
+
+    def synchronous_standby_names(self):
+        return self._cluster_info_state_get('synchronous_standby_names')
+
+    def pg_stat_replication(self):
+        return self._cluster_info_state_get('pg_stat_replication') or []
 
     def is_leader(self):
         try:
@@ -542,7 +555,7 @@ class Postgresql(object):
         logger.warning("Timed out waiting for PostgreSQL to start")
         return False
 
-    def start(self, timeout=None, task=None, block_callbacks=False, role=None):
+    def start(self, timeout=None, task=None, block_callbacks=False, role=None, after_start=None):
         """Start PostgreSQL
 
         Waits for postmaster to open ports or terminate so pg_isready can be used to check startup completion
@@ -613,6 +626,8 @@ class Postgresql(object):
 
         ret = self.wait_for_startup(start_timeout)
         if ret is not None:
+            if ret and after_start:
+                after_start()
             return ret
         elif timeout is not None:
             return False
@@ -639,7 +654,7 @@ class Postgresql(object):
             return 'not accessible or not healty'
 
     def stop(self, mode='fast', block_callbacks=False, checkpoint=None,
-             on_safepoint=None, on_shutdown=None, stop_timeout=None):
+             on_safepoint=None, on_shutdown=None, before_shutdown=None, stop_timeout=None):
         """Stop PostgreSQL
 
         Supports a callback when a safepoint is reached. A safepoint is when no user backend can return a successful
@@ -648,11 +663,13 @@ class Postgresql(object):
 
         :param on_safepoint: This callback is called when no user backends are running.
         :param on_shutdown: is called when pg_controldata starts reporting `Database cluster state: shut down`
+        :param before_shutdown: is called after running optional CHECKPOINT and before running pg_ctl stop
         """
         if checkpoint is None:
             checkpoint = False if mode == 'immediate' else True
 
-        success, pg_signaled = self._do_stop(mode, block_callbacks, checkpoint, on_safepoint, on_shutdown, stop_timeout)
+        success, pg_signaled = self._do_stop(mode, block_callbacks, checkpoint, on_safepoint,
+                                             on_shutdown, before_shutdown, stop_timeout)
         if success:
             # block_callbacks is used during restart to avoid
             # running start/stop callbacks in addition to restart ones
@@ -665,7 +682,7 @@ class Postgresql(object):
             self.set_state('stop failed')
         return success
 
-    def _do_stop(self, mode, block_callbacks, checkpoint, on_safepoint, on_shutdown, stop_timeout):
+    def _do_stop(self, mode, block_callbacks, checkpoint, on_safepoint, on_shutdown, before_shutdown, stop_timeout):
         postmaster = self.is_running()
         if not postmaster:
             if on_safepoint:
@@ -677,6 +694,9 @@ class Postgresql(object):
 
         if not block_callbacks:
             self.set_state('stopping')
+
+        if before_shutdown:
+            before_shutdown()
 
         # Send signal to postmaster to stop
         success = postmaster.signal_stop(mode, self.pgcommand('pg_ctl'))
@@ -805,7 +825,8 @@ class Postgresql(object):
 
         return self.state == 'running'
 
-    def restart(self, timeout=None, task=None, block_callbacks=False, role=None):
+    def restart(self, timeout=None, task=None, block_callbacks=False,
+                role=None, before_shutdown=None, after_start=None):
         """Restarts PostgreSQL.
 
         When timeout parameter is set the call will block either until PostgreSQL has started, failed to start or
@@ -816,7 +837,8 @@ class Postgresql(object):
         self.set_state('restarting')
         if not block_callbacks:
             self.__cb_pending = ACTION_ON_RESTART
-        ret = self.stop(block_callbacks=True) and self.start(timeout, task, True, role)
+        ret = self.stop(block_callbacks=True, before_shutdown=before_shutdown)\
+            and self.start(timeout, task, True, role, after_start)
         if not ret and not self.is_starting():
             self.set_state('restart failed ({0})'.format(self.state))
         return ret
@@ -941,6 +963,7 @@ class Postgresql(object):
         for _ in polling_loop(wait_seconds):
             data = self.controldata()
             if data.get('Database cluster state') == 'in production':
+                self.set_role('master')
                 return True
 
     def _pre_promote(self):
@@ -958,8 +981,8 @@ class Postgresql(object):
             logger.info('pre_promote script `%s` exited with %s', cmd, ret)
         return ret == 0
 
-    def promote(self, wait_seconds, task, on_success=None):
-        if self.role == 'master':
+    def promote(self, wait_seconds, task, before_promote=None, on_success=None):
+        if self.role in ('promoted', 'master'):
             return True
 
         ret = self._pre_promote()
@@ -975,11 +998,15 @@ class Postgresql(object):
             logger.info("PostgreSQL promote cancelled.")
             return False
 
+        if before_promote is not None:
+            before_promote()
+
         self.slots_handler.on_promote()
+        self.citus_handler.schedule_cache_rebuild()
 
         ret = self.pg_ctl('promote', '-W')
         if ret:
-            self.set_role('master')
+            self.set_role('promoted')
             if on_success is not None:
                 on_success()
             self.call_nowait(ACTION_ON_ROLE_CHANGE)
@@ -1112,54 +1139,6 @@ class Postgresql(object):
             logger.exception('Could not remove data directory %s', self._data_dir)
             self.move_data_directory()
 
-    def pick_synchronous_standby(self, cluster, sync_node_count=1, sync_node_maxlag=-1):
-        """Finds the best candidate to be the synchronous standby.
-
-        Current synchronous standby is always preferred, unless it has disconnected or does not want to be a
-        synchronous standby any longer.
-        Parameter sync_node_maxlag(maximum_lag_on_syncnode) would help swapping unhealthy sync replica in case
-        if it stops responding (or hung). Please set the value high enough so it won't unncessarily swap sync
-        standbys during high loads. Any less or equal of 0 value keep the behavior backward compatible and
-        will not swap. Please note that it will not also swap sync standbys in case where all replicas are hung.
-
-        :returns tuple of candidates list and synchronous standby list.
-        """
-        if self._major_version < 90600:
-            sync_node_count = 1
-        members = CaseInsensitiveDict({m.name: m for m in cluster.members})
-        candidates = []
-        sync_nodes = []
-        replica_list = []
-        # Pick candidates based on who has higher replay/remote_write/flush lsn.
-        synchronous_commit = self._cluster_info_state_get('synchronous_commit')
-        sort_col = {'remote_apply': 'replay', 'remote_write': 'write'}.get(synchronous_commit, 'flush') + '_lsn'
-        pg_stat_replication = [(r['application_name'], r['sync_state'], r[sort_col])
-                               for r in self._cluster_info_state_get('pg_stat_replication') or []
-                               if r[sort_col] is not None]
-        # pg_stat_replication.sync_state has 4 possible states - async, potential, quorum, sync.
-        # That is, alphabetically they are in the reversed order of priority.
-        # Since we are doing reversed sort on (sync_state, lsn) tuples, it helps to keep the result
-        # consistent in case if a synchronous standby member is slowed down OR async node receiving
-        # changes faster than the sync member (very rare but possible).
-        # Such cases would trigger sync standby member swapping, but only if lag on a sync node exceeding a threshold.
-        for app_name, sync_state, replica_lsn in sorted(pg_stat_replication, key=lambda r: (r[1], r[2]), reverse=True):
-            member = members.get(app_name)
-            if member and member.is_running and not member.tags.get('nosync', False):
-                replica_list.append((member.name, sync_state, replica_lsn, bool(member.nofailover)))
-
-        max_lsn = max(replica_list, key=lambda x: x[2])[2] if len(replica_list) > 1 else self.last_operation()
-
-        # Prefer members without nofailover tag. We are relying on the fact that sorts are guaranteed to be stable.
-        for app_name, sync_state, replica_lsn, _ in sorted(replica_list, key=lambda x: x[3]):
-            if sync_node_maxlag <= 0 or max_lsn - replica_lsn <= sync_node_maxlag:
-                candidates.append(app_name)
-                if sync_state == 'sync':
-                    sync_nodes.append(app_name)
-            if len(candidates) >= sync_node_count:
-                break
-
-        return candidates, sync_nodes
-
     def schedule_sanity_checks_after_pause(self):
         """
             After coming out of pause we have to:
@@ -1170,4 +1149,5 @@ class Postgresql(object):
         if not self._major_version:
             self.configure_server_parameters()
         self.slots_handler.schedule()
+        self.citus_handler.schedule_cache_rebuild()
         self._sysid = None

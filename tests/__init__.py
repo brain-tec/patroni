@@ -101,7 +101,9 @@ class MockCursor(object):
         elif sql.startswith('WITH slots AS (SELECT slot_name, active'):
             self.results = [(False, True)]
         elif sql.startswith('SELECT CASE WHEN pg_catalog.pg_is_in_recovery()'):
-            self.results = [(1, 2, 1, 0, False, 1, 1, None, None, [{"slot_name": "ls", "confirmed_flush_lsn": 12345}])]
+            self.results = [(1, 2, 1, 0, False, 1, 1, None, None,
+                             [{"slot_name": "ls", "confirmed_flush_lsn": 12345}],
+                             'on', 'n1', None)]
         elif sql.startswith('SELECT pg_catalog.pg_is_in_recovery()'):
             self.results = [(False, 2)]
         elif sql.startswith('SELECT pg_catalog.pg_postmaster_start_time'):
@@ -126,6 +128,10 @@ class MockCursor(object):
                                  b'1\t0/40159C0\tno recovery target specified\n\n'
                                  b'2\t0/402DD98\tno recovery target specified\n\n'
                                  b'3\t0/403DD98\tno recovery target specified\n')]
+        elif sql.startswith('SELECT pg_catalog.citus_add_node'):
+            self.results = [(2,)]
+        elif sql.startswith('SELECT nodeid, groupid'):
+            self.results = [(1, 0, 'host1', 5432, 'primary'), (2, 1, 'host2', 5432, 'primary')]
         else:
             self.results = [(None, None, None, None, None, None, None, None, None, None)]
 
@@ -203,7 +209,8 @@ class PostgresInit(unittest.TestCase):
                              'pg_hba': ['host all all 0.0.0.0/0 md5'],
                              'pg_ident': ['krb realm postgres'],
                              'callbacks': {'on_start': 'true', 'on_stop': 'true', 'on_reload': 'true',
-                                           'on_restart': 'true', 'on_role_change': 'true'}})
+                                           'on_restart': 'true', 'on_role_change': 'true'},
+                             'citus': {'group': 0, 'database': 'citus'}})
 
 
 class BaseTestPostgresql(PostgresInit):
