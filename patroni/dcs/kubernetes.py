@@ -8,7 +8,6 @@ import os
 import random
 import socket
 import six
-import sys
 import tempfile
 import time
 import urllib3
@@ -242,7 +241,7 @@ class K8sClient(object):
 
         def set_base_uri(self, value):
             logger.info('Selected new K8s API server endpoint %s', value)
-            # We will connect by IP of the master node which is not listed as alternative name
+            # We will connect by IP of the K8s master node which is not listed as alternative name
             self.pool_manager.connection_pool_kw['assert_hostname'] = False
             self._base_uri = value
 
@@ -1132,9 +1131,9 @@ class Kubernetes(AbstractDCS):
         resource_version = kind and kind.metadata.resource_version
         return self._update_leader_with_retry(annotations, resource_version, self.__ips)
 
-    def attempt_to_acquire_leader(self, permanent=False):
+    def attempt_to_acquire_leader(self):
         now = datetime.datetime.now(tzutc).isoformat()
-        annotations = {self._LEADER: self._name, 'ttl': str(sys.maxsize if permanent else self._ttl),
+        annotations = {self._LEADER: self._name, 'ttl': str(self._ttl),
                        'renewTime': now, 'acquireTime': now, 'transitions': '0'}
         if self._leader_observed_record:
             try:
@@ -1186,11 +1185,11 @@ class Kubernetes(AbstractDCS):
         return self.patch_or_create_config({self._CONFIG: value}, index, bool(self._config_resource_version), False)
 
     @catch_kubernetes_errors
-    def touch_member(self, data, permanent=False):
+    def touch_member(self, data):
         cluster = self.cluster
         if cluster and cluster.leader and cluster.leader.name == self._name:
             role = 'master'
-        elif data['state'] == 'running' and data['role'] != 'master':
+        elif data['state'] == 'running' and data['role'] not in ('master', 'primary'):
             role = data['role']
         else:
             role = None

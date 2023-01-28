@@ -34,9 +34,8 @@ except ImportError:  # pragma: no cover
 
 from .dcs import get_dcs as _get_dcs
 from .exceptions import PatroniException
-from .postgresql import Postgresql
 from .postgresql.misc import postgres_version_to_int
-from .utils import cluster_as_json, find_executable, patch_config, polling_loop
+from .utils import cluster_as_json, find_executable, patch_config, polling_loop, is_standby_cluster
 from .request import PatroniRequest
 from .version import __version__
 
@@ -141,6 +140,7 @@ option_default_citus_group = click.option('--group', required=False, type=int, h
                                           default=lambda: click.get_current_context().obj.get('citus', {}).get('group'))
 option_citus_group = click.option('--group', required=False, type=int, help='Citus group')
 option_insecure = click.option('-k', '--insecure', is_flag=True, help='Allow connections to SSL sites without certs')
+role_choice = click.Choice(['leader', 'primary', 'standby-leader', 'replica', 'standby', 'any', 'master'])
 
 
 @click.group()
@@ -241,24 +241,28 @@ def watching(w, watch, max_count=None, clear=True):
         yield 0
 
 
-def get_all_members(obj, cluster, group, role='master'):
+def get_all_members(obj, cluster, group, role='leader'):
     clusters = {0: cluster}
     if obj.get('citus') and group is None:
         clusters.update(cluster.workers)
-    if role == 'master':
+    if role in ('leader', 'master', 'primary', 'standby-leader'):
+        role = {'primary': 'master', 'standby-leader': 'standby_leader'}.get(role, role)
         for cluster in clusters.values():
-            if cluster.leader is not None and cluster.leader.name:
+            if cluster.leader is not None and cluster.leader.name and\
+                    (role == 'leader' or
+                     cluster.leader.data.get('role') != 'master' and role == 'standby_leader' or
+                     cluster.leader.data.get('role') != 'standby_leader' and role == 'master'):
                 yield cluster.leader.member
         return
 
     for cluster in clusters.values():
         leader_name = (cluster.leader.member.name if cluster.leader else None)
         for m in cluster.members:
-            if role == 'any' or role == 'replica' and m.name != leader_name:
+            if role == 'any' or role in ('replica', 'standby') and m.name != leader_name:
                 yield m
 
 
-def get_any_member(obj, cluster, group, role='master', member=None):
+def get_any_member(obj, cluster, group, role='leader', member=None):
     for m in get_all_members(obj, cluster, group, role):
         if member is None or m.name == member:
             return m
@@ -273,7 +277,7 @@ def get_all_members_leader_first(cluster):
             yield member
 
 
-def get_cursor(obj, cluster, group, connect_parameters, role='master', member=None):
+def get_cursor(obj, cluster, group, connect_parameters, role='leader', member=None):
     member = get_any_member(obj, cluster, group, role=role, member=member)
     if member is None:
         return None
@@ -288,13 +292,14 @@ def get_cursor(obj, cluster, group, connect_parameters, role='master', member=No
     from . import psycopg
     conn = psycopg.connect(**params)
     cursor = conn.cursor()
-    if role == 'any':
+    if role in ('any', 'leader'):
         return cursor
 
     cursor.execute('SELECT pg_catalog.pg_is_in_recovery()')
     in_recovery = cursor.fetchone()[0]
 
-    if in_recovery and role == 'replica' or not in_recovery and role == 'master':
+    if in_recovery and role in ('replica', 'standby', 'standby-leader')\
+            or not in_recovery and role in ('master', 'primary'):
         return cursor
 
     conn.close()
@@ -347,9 +352,8 @@ def confirm_members_action(members, force, action, scheduled_at=None):
                 raise PatroniCtlException('Aborted {0}'.format(action))
 
 
-@ctl.command('dsn', help='Generate a dsn for the provided member, defaults to a dsn of the master')
-@click.option('--role', '-r', help='Give a dsn of any member with this role', type=click.Choice(['master', 'replica',
-              'any']), default=None)
+@ctl.command('dsn', help='Generate a dsn for the provided member, defaults to a dsn of the leader')
+@click.option('--role', '-r', help='Give a dsn of any member with this role', type=role_choice, default=None)
 @click.option('--member', '-m', help='Generate a dsn for this member', type=str)
 @arg_cluster_name
 @option_citus_group
@@ -360,7 +364,7 @@ def dsn(obj, cluster_name, group, role, member):
             raise PatroniCtlException('--role and --member are mutually exclusive options')
         role = 'any'
     if member is None and role is None:
-        role = 'master'
+        role = 'leader'
 
     cluster = get_dcs(obj, cluster_name, group).get_cluster()
     m = get_any_member(obj, cluster, group, role=role, member=member)
@@ -380,8 +384,7 @@ def dsn(obj, cluster_name, group, role, member):
 @click.option('-U', '--username', help='database user name', type=str)
 @option_watch
 @option_watchrefresh
-@click.option('--role', '-r', help='The role of the query', type=click.Choice(['master', 'replica', 'any']),
-              default=None)
+@click.option('--role', '-r', help='The role of the query', type=role_choice, default=None)
 @click.option('--member', '-m', help='Query a specific member', type=str)
 @click.option('--delimiter', help='The column delimiter', default='\t')
 @click.option('--command', '-c', help='The SQL commands to execute')
@@ -408,7 +411,7 @@ def query(
             raise PatroniCtlException('--role and --member are mutually exclusive options')
         role = 'any'
     if member is None and role is None:
-        role = 'master'
+        role = 'leader'
 
     if p_file is not None and command is not None:
         raise PatroniCtlException('--file and --command are mutually exclusive options')
@@ -488,9 +491,9 @@ def remove(obj, cluster_name, group, fmt):
         raise PatroniCtlException('You did not exactly type "{0}"'.format(message))
 
     if cluster.leader and cluster.leader.name:
-        confirm = click.prompt('This cluster currently is healthy. Please specify the master name to continue')
+        confirm = click.prompt('This cluster currently is healthy. Please specify the leader name to continue')
         if confirm != cluster.leader.name:
-            raise PatroniCtlException('You did not specify the current master of the cluster')
+            raise PatroniCtlException('You did not specify the current leader of the cluster')
 
     dcs.delete_cluster()
 
@@ -524,8 +527,7 @@ def parse_scheduled(scheduled):
 @click.argument('cluster_name')
 @click.argument('member_names', nargs=-1)
 @option_citus_group
-@click.option('--role', '-r', help='Reload only members with this role', default='any',
-              type=click.Choice(['master', 'replica', 'any']))
+@click.option('--role', '-r', help='Reload only members with this role', type=role_choice, default='any')
 @option_force
 @click.pass_obj
 def reload(obj, cluster_name, member_names, group, force, role):
@@ -551,8 +553,7 @@ def reload(obj, cluster_name, member_names, group, force, role):
 @click.argument('cluster_name')
 @click.argument('member_names', nargs=-1)
 @option_citus_group
-@click.option('--role', '-r', help='Restart only members with this role', default='any',
-              type=click.Choice(['master', 'replica', 'any']))
+@click.option('--role', '-r', help='Restart only members with this role', type=role_choice, default='any')
 @click.option('--any', 'p_any', help='Restart a single member only', is_flag=True)
 @click.option('--scheduled', help='Timestamp of a scheduled restart in unambiguous format (e.g. ISO 8601)',
               default=None)
@@ -662,11 +663,11 @@ def reinit(obj, cluster_name, group, member_names, force, wait):
                 wait_on_members.remove(member)
 
 
-def _do_failover_or_switchover(obj, action, cluster_name, group, master, candidate, force, scheduled=None):
+def _do_failover_or_switchover(obj, action, cluster_name, group, leader, candidate, force, scheduled=None):
     """
         We want to trigger a failover or switchover for the specified cluster name.
 
-        We verify that the cluster name, master name and candidate name are correct.
+        We verify that the cluster name, leader name and candidate name are correct.
         If so, we trigger an action and keep the client up to date.
     """
 
@@ -684,19 +685,20 @@ def _do_failover_or_switchover(obj, action, cluster_name, group, master, candida
             cluster = dcs.get_cluster()
 
     if action == 'switchover' and (cluster.leader is None or not cluster.leader.name):
-        raise PatroniCtlException('This cluster has no master')
+        raise PatroniCtlException('This cluster has no leader')
 
-    if master is None:
+    if leader is None:
         if force or action == 'failover':
-            master = cluster.leader and cluster.leader.name
+            leader = cluster.leader and cluster.leader.name
         else:
-            master = click.prompt('Master', type=str, default=cluster.leader.member.name)
+            prompt = 'Standby Leader' if is_standby_cluster(cluster.config) else 'Primary'
+            leader = click.prompt(prompt, type=str, default=cluster.leader.member.name)
 
-    if master is not None and cluster.leader and cluster.leader.member.name != master:
-        raise PatroniCtlException('Member {0} is not the leader of cluster {1}'.format(master, cluster_name))
+    if leader is not None and cluster.leader and cluster.leader.member.name != leader:
+        raise PatroniCtlException('Member {0} is not the leader of cluster {1}'.format(leader, cluster_name))
 
     # excluding members with nofailover tag
-    candidate_names = [str(m.name) for m in cluster.members if m.name != master and not m.nofailover]
+    candidate_names = [str(m.name) for m in cluster.members if m.name != leader and not m.nofailover]
     # We sort the names for consistent output to the client
     candidate_names.sort()
 
@@ -709,7 +711,7 @@ def _do_failover_or_switchover(obj, action, cluster_name, group, master, candida
     if action == 'failover' and not candidate:
         raise PatroniCtlException('Failover could be performed only to a specific candidate')
 
-    if candidate == master:
+    if candidate == leader:
         raise PatroniCtlException(action.title() + ' target and source are the same.')
 
     if candidate and candidate not in candidate_names:
@@ -730,13 +732,13 @@ def _do_failover_or_switchover(obj, action, cluster_name, group, master, candida
                 raise PatroniCtlException("Can't schedule switchover in the paused state")
             scheduled_at_str = scheduled_at.isoformat()
 
-    failover_value = {'leader': master, 'candidate': candidate, 'scheduled_at': scheduled_at_str}
+    failover_value = {'leader': leader, 'candidate': candidate, 'scheduled_at': scheduled_at_str}
 
     logging.debug(failover_value)
 
     # By now we have established that the leader exists and the candidate exists
     if not force:
-        demote_msg = ', demoting current master ' + master if master else ''
+        demote_msg = ', demoting current leader ' + leader if leader else ''
         if scheduled_at_str:
             if not click.confirm('Are you sure you want to schedule {0} of cluster {1} at {2}{3}?'
                                  .format(action, cluster_name, scheduled_at_str, demote_msg)):
@@ -768,7 +770,7 @@ def _do_failover_or_switchover(obj, action, cluster_name, group, master, candida
         logging.exception(r)
         logging.warning('Failing over to DCS')
         click.echo('{0} Could not {1} using Patroni api, falling back to DCS'.format(timestamp(), action))
-        dcs.manual_failover(master, candidate, scheduled_at=scheduled_at)
+        dcs.manual_failover(leader, candidate, scheduled_at=scheduled_at)
 
     output_members(obj, cluster, cluster_name, group=group)
 
@@ -776,26 +778,26 @@ def _do_failover_or_switchover(obj, action, cluster_name, group, master, candida
 @ctl.command('failover', help='Failover to a replica')
 @arg_cluster_name
 @option_citus_group
-@click.option('--master', help='The name of the current master', default=None)
+@click.option('--leader', '--primary', '--master', 'leader', help='The name of the current leader', default=None)
 @click.option('--candidate', help='The name of the candidate', default=None)
 @option_force
 @click.pass_obj
-def failover(obj, cluster_name, group, master, candidate, force):
-    action = 'switchover' if master else 'failover'
-    _do_failover_or_switchover(obj, action, cluster_name, group, master, candidate, force)
+def failover(obj, cluster_name, group, leader, candidate, force):
+    action = 'switchover' if leader else 'failover'
+    _do_failover_or_switchover(obj, action, cluster_name, group, leader, candidate, force)
 
 
 @ctl.command('switchover', help='Switchover to a replica')
 @arg_cluster_name
 @option_citus_group
-@click.option('--master', help='The name of the current master', default=None)
+@click.option('--leader', '--primary', '--master', 'leader', help='The name of the current leader', default=None)
 @click.option('--candidate', help='The name of the candidate', default=None)
 @click.option('--scheduled', help='Timestamp of a scheduled switchover in unambiguous format (e.g. ISO 8601)',
               default=None)
 @option_force
 @click.pass_obj
-def switchover(obj, cluster_name, group, master, candidate, force, scheduled):
-    _do_failover_or_switchover(obj, 'switchover', cluster_name, group, master, candidate, force, scheduled)
+def switchover(obj, cluster_name, group, leader, candidate, force, scheduled):
+    _do_failover_or_switchover(obj, 'switchover', cluster_name, group, leader, candidate, force, scheduled)
 
 
 def generate_topology(level, member, topology):
@@ -946,69 +948,12 @@ def timestamp(precision=6):
     return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:precision - 7]
 
 
-def touch_member(config, dcs):
-    ''' Rip-off of the ha.touch_member without inter-class dependencies '''
-    p = Postgresql(config['postgresql'])
-    p.set_state('running')
-    p.set_role('master')
-
-    def restapi_connection_string(config):
-        protocol = 'https' if config.get('certfile') else 'http'
-        connect_address = config.get('connect_address')
-        listen = config['listen']
-        return '{0}://{1}/patroni'.format(protocol, connect_address or listen)
-
-    data = {
-        'conn_url': p.connection_string,
-        'api_url': restapi_connection_string(config['restapi']),
-        'state': p.state,
-        'role': p.role
-    }
-
-    return dcs.touch_member(data, permanent=True)
-
-
-def set_defaults(config, cluster_name):
-    """fill-in some basic configuration parameters if config file is not set """
-    config['postgresql'].setdefault('name', cluster_name)
-    config['postgresql'].setdefault('scope', cluster_name)
-    config['postgresql'].setdefault('listen', '127.0.0.1')
-    config['postgresql']['authentication'] = {'replication': None}
-    config['restapi']['listen'] = ':' in config['restapi']['listen'] and config['restapi']['listen'] or '127.0.0.1:8008'
-
-
-@ctl.command('scaffold', help='Create a structure for the cluster in DCS')
-@click.argument('cluster_name')
-@option_citus_group
-@click.option('--sysid', '-s', help='System ID of the cluster to put into the initialize key', default="")
-@click.pass_obj
-def scaffold(obj, cluster_name, group, sysid):
-    dcs = get_dcs(obj, cluster_name, group)
-    cluster = dcs.get_cluster()
-    if cluster and cluster.initialize is not None:
-        raise PatroniCtlException("This cluster is already initialized")
-
-    if not dcs.initialize(create_new=True, sysid=sysid):
-        # initialize key already exists, don't touch this cluster
-        raise PatroniCtlException("Initialize key for cluster {0} already exists".format(cluster_name))
-
-    set_defaults(obj, cluster_name)
-
-    # make sure the leader keys will never expire
-    if not (touch_member(obj, dcs) and dcs.attempt_to_acquire_leader(permanent=True)):
-        # we did initialize this cluster, but failed to write the leader or member keys, wipe it down completely.
-        dcs.delete_cluster()
-        raise PatroniCtlException("Unable to install permanent leader for cluster {0}".format(cluster_name))
-    click.echo("Cluster {0} has been created successfully".format(cluster_name))
-
-
 @ctl.command('flush', help='Discard scheduled events')
 @click.argument('cluster_name')
 @option_citus_group
 @click.argument('member_names', nargs=-1)
 @click.argument('target', type=click.Choice(['restart', 'switchover']))
-@click.option('--role', '-r', help='Flush only members with this role', default='any',
-              type=click.Choice(['master', 'replica', 'any']))
+@click.option('--role', '-r', help='Flush only members with this role', type=role_choice, default='any')
 @option_force
 @click.pass_obj
 def flush(obj, cluster_name, group, member_names, force, role, target):
