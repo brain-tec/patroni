@@ -61,13 +61,13 @@ def etcd_read(self, key, **kwargs):
                  "modifiedIndex": 1582, "createdIndex": 1582},
                 {"key": "/service/batman5/members", "dir": True, "nodes": [
                     {"key": "/service/batman5/members/postgresql1",
-                     "value": "postgres://replicator:rep-pass@127.0.0.1:5434/postgres" +
-                        "?application_name=http://127.0.0.1:8009/patroni",
+                     "value": "postgres://replicator:rep-pass@127.0.0.1:5434/postgres"
+                     + "?application_name=http://127.0.0.1:8009/patroni",
                      "expiration": "2015-05-15T09:10:59.949384522Z", "ttl": 21,
                      "modifiedIndex": 20727, "createdIndex": 20727},
                     {"key": "/service/batman5/members/postgresql0",
-                     "value": "postgres://replicator:rep-pass@127.0.0.1:5433/postgres" +
-                        "?application_name=http://127.0.0.1:8008/patroni",
+                     "value": "postgres://replicator:rep-pass@127.0.0.1:5433/postgres"
+                     + "?application_name=http://127.0.0.1:8008/patroni",
                      "expiration": "2015-05-15T09:11:09.611860899Z", "ttl": 30,
                      "modifiedIndex": 20730, "createdIndex": 20730}],
                  "modifiedIndex": 1581, "createdIndex": 1581},
@@ -256,7 +256,6 @@ class TestEtcd(unittest.TestCase):
     def test_get_cluster(self):
         cluster = self.etcd.get_cluster()
         self.assertIsInstance(cluster, Cluster)
-        self.assertFalse(cluster.is_synchronous_mode())
         self.etcd._base_path = '/service/legacy'
         self.assertIsInstance(self.etcd.get_cluster(), Cluster)
         self.etcd._base_path = '/service/broken'

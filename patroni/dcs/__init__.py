@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse, urlunparse, parse_qsl
 
 from ..exceptions import PatroniFatalException
-from ..utils import deep_compare, parse_bool, uri
+from ..utils import deep_compare, uri
 
 CITUS_COORDINATOR_GROUP_ID = 0
 citus_group_re = re.compile('^(0|[1-9][0-9]*)$')
@@ -353,8 +353,8 @@ class ClusterConfig(namedtuple('ClusterConfig', 'index,data,modify_index')):
     @property
     def permanent_slots(self):
         return isinstance(self.data, dict) and (
-                self.data.get('permanent_replication_slots') or
-                self.data.get('permanent_slots') or self.data.get('slots')
+            self.data.get('permanent_replication_slots')
+            or self.data.get('permanent_slots') or self.data.get('slots')
         ) or {}
 
     @property
@@ -521,15 +521,6 @@ class Cluster(namedtuple('Cluster', 'initialize,config,leader,last_lsn,members,'
         candidates = [m for m in self.members if m.clonefrom and m.is_running and m.name not in exclude]
         return candidates[randint(0, len(candidates) - 1)] if candidates else self.leader
 
-    def check_mode(self, mode):
-        return bool(self.config and parse_bool(self.config.data.get(mode)))
-
-    def is_paused(self):
-        return self.check_mode('pause')
-
-    def is_synchronous_mode(self):
-        return self.check_mode('synchronous_mode')
-
     @property
     def __permanent_slots(self):
         return self.config and self.config.permanent_slots or {}
@@ -555,15 +546,15 @@ class Cluster(namedtuple('Cluster', 'initialize,config,leader,last_lsn,members,'
         # primary), or if replicatefrom destination member happens to be the current primary
         use_slots = self.use_slots
         if role in ('master', 'primary', 'standby_leader'):
-            slot_members = [m.name for m in self.members if use_slots and m.name != my_name and
-                            (m.replicatefrom is None or m.replicatefrom == my_name or
-                             not self.has_member(m.replicatefrom))]
+            slot_members = [m.name for m in self.members if use_slots and m.name != my_name
+                            and (m.replicatefrom is None or m.replicatefrom == my_name
+                                 or not self.has_member(m.replicatefrom))]
             permanent_slots = self.__permanent_slots if use_slots and \
                 role in ('master', 'primary') else self.__permanent_physical_slots
         else:
             # only manage slots for replicas that replicate from this one, except for the leader among them
-            slot_members = [m.name for m in self.members if use_slots and
-                            m.replicatefrom == my_name and m.name != self.leader_name]
+            slot_members = [m.name for m in self.members if use_slots
+                            and m.replicatefrom == my_name and m.name != self.leader_name]
             permanent_slots = self.__permanent_logical_slots if use_slots and not nofailover else {}
 
         slots = {slot_name_from_member_name(name): {'type': 'physical'} for name in slot_members}
@@ -599,7 +590,7 @@ class Cluster(namedtuple('Cluster', 'initialize,config,leader,last_lsn,members,'
                     if major_version < 110000:
                         disabled_permanent_logical_slots.append(name)
                     elif name in slots:
-                        logger.error("Permanent logical replication slot {'%s': %s} is conflicting with" +
+                        logger.error("Permanent logical replication slot {'%s': %s} is conflicting with"
                                      " physical replication slot for cluster member", name, value)
                     else:
                         slots[name] = value

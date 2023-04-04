@@ -8,12 +8,12 @@ import time
 
 from urllib.parse import urlparse, parse_qsl, unquote
 
-from .validator import CaseInsensitiveDict, recovery_parameters,\
-        transform_postgresql_parameter_value, transform_recovery_parameter_value
-from ..dcs import slot_name_from_member_name, RemoteMember
+from .validator import recovery_parameters, transform_postgresql_parameter_value, transform_recovery_parameter_value
+from ..collections import CaseInsensitiveDict
+from ..dcs import RemoteMember, slot_name_from_member_name
 from ..exceptions import PatroniFatalException
 from ..utils import compare_values, parse_bool, parse_int, split_host_port, uri, \
-        validate_directory, is_subpath
+    validate_directory, is_subpath
 
 logger = logging.getLogger(__name__)
 
@@ -520,8 +520,8 @@ class ConfigHandler(object):
 
     def build_recovery_params(self, member):
         recovery_params = CaseInsensitiveDict({p: v for p, v in self.get('recovery_conf', {}).items()
-                                               if not p.lower().startswith('recovery_target') and
-                                               p.lower() not in ('primary_conninfo', 'primary_slot_name')})
+                                               if not p.lower().startswith('recovery_target')
+                                               and p.lower() not in ('primary_conninfo', 'primary_slot_name')})
         recovery_params.update({'standby_mode': 'on', 'recovery_target_timeline': 'latest'})
         if self._postgresql.major_version >= 120000:
             # on pg12 we want to protect from following params being set in one of included files
@@ -838,9 +838,10 @@ class ConfigHandler(object):
         parameters = config['parameters'].copy()
         listen_addresses, port = split_host_port(config['listen'], 5432)
         parameters.update(cluster_name=self._postgresql.scope, listen_addresses=listen_addresses, port=str(port))
-        if config.get('synchronous_mode', False):
+        if not self._postgresql._global_config or self._postgresql._global_config.is_synchronous_mode:
             if self._synchronous_standby_names is None:
-                if config.get('synchronous_mode_strict', False):
+                if self._postgresql._global_config and self._postgresql._global_config.is_synchronous_mode_strict\
+                        and self._postgresql.role in ('master', 'primary', 'promoted'):
                     parameters['synchronous_standby_names'] = '*'
                 else:
                     parameters.pop('synchronous_standby_names', None)
@@ -863,8 +864,8 @@ class ConfigHandler(object):
 
         self._postgresql.citus_handler.adjust_postgres_gucs(parameters)
 
-        ret = CaseInsensitiveDict({k: v for k, v in parameters.items() if not self._postgresql.major_version or
-                                   self._postgresql.major_version >= self.CMDLINE_OPTIONS.get(k, (0, 1, 90100))[2]})
+        ret = CaseInsensitiveDict({k: v for k, v in parameters.items() if not self._postgresql.major_version
+                                   or self._postgresql.major_version >= self.CMDLINE_OPTIONS.get(k, (0, 1, 90100))[2]})
         ret.update({k: os.path.join(self._config_dir, ret[k]) for k in ('hba_file', 'ident_file') if k in ret})
         return ret
 
@@ -923,8 +924,8 @@ class ConfigHandler(object):
 
     def _get_pg_settings(self, names):
         return {r[0]: r for r in self._postgresql.query(('SELECT name, setting, unit, vartype, context, sourcefile'
-                                                         + ' FROM pg_catalog.pg_settings ' +
-                                                         ' WHERE pg_catalog.lower(name) = ANY(%s)'),
+                                                         + ' FROM pg_catalog.pg_settings '
+                                                         + ' WHERE pg_catalog.lower(name) = ANY(%s)'),
                                                         [n.lower() for n in names])}
 
     @staticmethod
@@ -1122,7 +1123,7 @@ class ConfigHandler(object):
     @property
     def rewind_credentials(self):
         return self._config['authentication'].get('rewind', self._superuser) \
-                if self._postgresql.major_version >= 110000 else self._superuser
+            if self._postgresql.major_version >= 110000 else self._superuser
 
     @property
     def ident_file(self):
