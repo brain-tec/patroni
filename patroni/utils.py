@@ -19,6 +19,7 @@ import socket
 import sys
 import tempfile
 import time
+from shlex import split
 
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union, Tuple, Type, TYPE_CHECKING
 
@@ -298,7 +299,7 @@ def convert_to_base_unit(value: Union[int, float], unit: str, base_unit: Optiona
         return value
 
 
-def parse_int(value: Any, base_unit: Optional[str] = None) -> Union[int, None]:
+def parse_int(value: Any, base_unit: Optional[str] = None) -> Optional[int]:
     """Parse *value* as an :class:`int`.
 
     :param value: any value that can be handled either by :func:`strtol` or :func:`strtod`. If *value* contains a
@@ -351,7 +352,7 @@ def parse_int(value: Any, base_unit: Optional[str] = None) -> Union[int, None]:
             return round(val)
 
 
-def parse_real(value: Any, base_unit: Optional[str] = None) -> Union[float, None]:
+def parse_real(value: Any, base_unit: Optional[str] = None) -> Optional[float]:
     """Parse *value* as a :class:`float`.
 
     :param value: any value that can be handled by :func:`strtod`. If *value* contains a unit, then *base_unit* must
@@ -382,7 +383,7 @@ def parse_real(value: Any, base_unit: Optional[str] = None) -> Union[float, None
         return convert_to_base_unit(val, unit, base_unit)
 
 
-def compare_values(vartype: str, unit: str, old_value: Any, new_value: Any) -> bool:
+def compare_values(vartype: str, unit: Optional[str], old_value: Any, new_value: Any) -> bool:
     """Check if *old_value* and *new_value* are equivalent after parsing them as *vartype*.
 
     :param vartpe: the target type to parse *old_value* and *new_value* before comparing them. Accepts any among of the
@@ -593,7 +594,7 @@ def polling_loop(timeout: Union[int, float], interval: Union[int, float] = 1) ->
         time.sleep(float(interval))
 
 
-def split_host_port(value: str, default_port: int) -> Tuple[str, int]:
+def split_host_port(value: str, default_port: Optional[int]) -> Tuple[str, int]:
     """Extract host(s) and port from *value*.
 
     :param value: string from where host(s) and port will be extracted. Accepts either of these formats
@@ -916,3 +917,32 @@ def enable_keepalive(sock: socket.socket, timeout: int, idle: int, cnt: int = 3)
 
     for opt in keepalive_socket_options(timeout, idle, cnt):
         sock.setsockopt(*opt)
+
+
+def unquote(string: str) -> str:
+    """Unquote a fully quoted *string*.
+
+    :Examples:
+
+        A *string* with quotes will have those quotes removed
+        >>> unquote('"a quoted string"')
+        'a quoted string'
+
+        A *string* with multiple quotes will be returned as is
+        >>> unquote('"a multi" "quoted string"')
+        '"a multi" "quoted string"'
+
+        So will a *string* with unbalanced quotes
+        >>> unquote('unbalanced "quoted string')
+        'unbalanced "quoted string'
+
+    :param string: The string to be checked for quoting.
+    :returns: The string with quotes removed, if it is a fully quoted single string,
+              or the original string if quoting is not detected, or unquoting was not possible.
+    """
+    try:
+        ret = split(string)
+        ret = ret[0] if len(ret) == 1 else string
+    except ValueError:
+        ret = string
+    return ret

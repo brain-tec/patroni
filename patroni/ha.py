@@ -675,7 +675,7 @@ class Ha(object):
             cluster_history = {line[0]: line for line in cluster_history or []}
             history = self.state_handler.get_history(primary_timeline)
             if history and self.cluster.config:
-                history = history[-self.cluster.config.max_timelines_history:]
+                history = list(map(list, history[-self.cluster.config.max_timelines_history:]))
                 for line in history:
                     # enrich current history with promotion timestamps stored in DCS
                     if len(line) == 3 and line[0] in cluster_history \
@@ -1772,7 +1772,7 @@ class Ha(object):
         # Don't copy replication slots if failsafe_mode is active
         return [] if self.failsafe_is_active() else slots
 
-    def run_cycle(self):
+    def run_cycle(self) -> str:
         with self._async_executor:
             try:
                 info = self._run_cycle()
@@ -1829,7 +1829,7 @@ class Ha(object):
                 logger.error("PostgreSQL shutdown failed, leader key not removed.%s",
                              (" Leaving watchdog running." if self.watchdog.is_running else ""))
 
-    def watch(self, timeout):
+    def watch(self, timeout: float) -> bool:
         # watch on leader key changes if the postgres is running and leader is known and current node is not lock owner
         if self._async_executor.busy or not self.cluster or self.cluster.is_unlocked() or self.has_lock(False):
             leader_index = None

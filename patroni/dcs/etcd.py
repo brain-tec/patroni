@@ -16,7 +16,7 @@ from dns import resolver
 from http.client import HTTPException
 from queue import Queue
 from threading import Thread
-from typing import Any, Callable, Collection, Dict, List, Optional, Union, Tuple, Type
+from typing import Any, Callable, Collection, Dict, List, Optional, Union, Tuple, Type, TYPE_CHECKING
 from urllib.parse import urlparse
 from urllib3 import Timeout
 from urllib3.exceptions import HTTPError, ReadTimeoutError, ProtocolError
@@ -26,6 +26,8 @@ from . import AbstractDCS, Cluster, ClusterConfig, Failover, Leader, Member, Syn
 from ..exceptions import DCSError
 from ..request import get as requests_get
 from ..utils import Retry, RetryFailedError, split_host_port, uri, USER_AGENT
+if TYPE_CHECKING:  # pragma: no cover
+    from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +76,10 @@ class DnsCachingResolver(Thread):
                 response = new_response
         return response
 
-    def resolve_async(self, host: str, port: int, attempt: int = 0):
+    def resolve_async(self, host: str, port: int, attempt: int = 0) -> None:
         self._resolve_queue.put(((host, port), attempt))
 
-    def remove(self, host: str, port: int):
+    def remove(self, host: str, port: int) -> None:
         self._cache.pop((host, port), None)
 
     @staticmethod
@@ -479,7 +481,7 @@ class AbstractEtcd(AbstractDCS):
     def _client(self) -> AbstractEtcdClientWithFailover:
         """return correct type of etcd client"""
 
-    def reload_config(self, config: Dict[str, Any]) -> None:
+    def reload_config(self, config: Union['Config', Dict[str, Any]]) -> None:
         super(AbstractEtcd, self).reload_config(config)
         self._client.reload_config(config.get(self.__class__.__name__.lower(), {}))
 
