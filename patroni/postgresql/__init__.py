@@ -26,7 +26,7 @@ from .slots import SlotsHandler
 from .sync import SyncHandler
 from .. import psycopg
 from ..async_executor import CriticalTask
-from ..dcs import Cluster, Member
+from ..dcs import Cluster, Leader, Member
 from ..exceptions import PostgresConnectionException
 from ..utils import Retry, RetryFailedError, polling_loop, data_directory_is_empty, parse_int
 
@@ -97,7 +97,7 @@ class Postgresql(object):
 
         self.cancellable = CancellableSubprocess()
 
-        self._sysid = None
+        self._sysid = ''
         self.retry = Retry(max_tries=-1, deadline=config['retry_timeout'] / 2.0, max_delay=1,
                            retry_exceptions=PostgresConnectionException)
 
@@ -284,10 +284,10 @@ class Postgresql(object):
         self._pending_restart = value
 
     @property
-    def sysid(self) -> Optional[str]:
+    def sysid(self) -> str:
         if not self._sysid and not self.bootstrapping:
             data = self.controldata()
-            self._sysid = data.get('Database system identifier', "")
+            self._sysid = data.get('Database system identifier', '')
         return self._sysid
 
     def get_postgres_role_from_data_directory(self) -> str:
@@ -742,6 +742,9 @@ class Postgresql(object):
         if not block_callbacks:
             self.set_state('stopping')
 
+        # invoke user-directed before stop script
+        self._before_stop()
+
         if before_shutdown:
             before_shutdown()
 
@@ -955,7 +958,7 @@ class Postgresql(object):
         except Exception:
             logger.exception('Can not fetch local timeline and lsn from replication connection')
 
-    def replica_cached_timeline(self, primary_timeline: int) -> Optional[int]:
+    def replica_cached_timeline(self, primary_timeline: Optional[int]) -> Optional[int]:
         if not self._cached_replica_timeline or not primary_timeline\
                 or self._cached_replica_timeline != primary_timeline:
             self._cached_replica_timeline = self.get_replica_timeline()
@@ -965,23 +968,23 @@ class Postgresql(object):
         """:returns: current timeline if postgres is running as a primary or 0."""
         return self._cluster_info_state_get('timeline') or 0
 
-    def get_history(self, timeline: int) -> Optional[List[Union[Tuple[int, int, str], Tuple[int, int, str, str, str]]]]:
+    def get_history(self, timeline: int) -> List[Union[Tuple[int, int, str], Tuple[int, int, str, str, str]]]:
         history_path = os.path.join(self.wal_dir, '{0:08X}.history'.format(timeline))
         history_mtime = mtime(history_path)
+        history: List[Union[Tuple[int, int, str], Tuple[int, int, str, str, str]]] = []
         if history_mtime:
             try:
                 with open(history_path, 'r') as f:
                     history_content = f.read()
-                history: List[Union[Tuple[int, int, str],
-                                    Tuple[int, int, str, str, str]]] = list(parse_history(history_content))
+                history = list(parse_history(history_content))
                 if history[-1][0] == timeline - 1:
                     history_mtime = datetime.fromtimestamp(history_mtime).replace(tzinfo=tz.tzlocal())
                     history[-1] = history[-1][:3] + (history_mtime.isoformat(), self.name)
-                return history
             except Exception:
                 logger.exception('Failed to read and parse %s', (history_path,))
+        return history
 
-    def follow(self, member: Member, role: str = 'replica',
+    def follow(self, member: Union[Leader, Member, None], role: str = 'replica',
                timeout: Optional[float] = None, do_reload: bool = False) -> Optional[bool]:
         """Reconfigure postgres to follow a new member or use different recovery parameters.
 
@@ -1050,6 +1053,21 @@ class Postgresql(object):
             logger.info('pre_promote script `%s` exited with %s', cmd, ret)
         return ret == 0
 
+    def _before_stop(self) -> None:
+        """Synchronously run a script prior to stopping postgres."""
+
+        cmd = self.config.get('before_stop')
+        if cmd:
+            self._do_before_stop(cmd)
+
+    def _do_before_stop(self, cmd: str) -> None:
+        try:
+            ret = self.cancellable.call(shlex.split(cmd))
+            if ret is not None:
+                logger.info('before_stop script `%s` exited with %s', cmd, ret)
+        except Exception as e:
+            logger.error('Exception when calling `%s`: %r', cmd, e)
+
     def promote(self, wait_seconds: int, task: CriticalTask, before_promote: Optional[Callable[..., Any]] = None,
                 on_success: Optional[Callable[..., Any]] = None) -> Optional[bool]:
         if self.role in ('promoted', 'master', 'primary'):
@@ -1101,7 +1119,8 @@ class Postgresql(object):
             with self.connection().cursor() as cursor:
                 cursor.execute(self.cluster_info_query.encode('utf-8'))
                 row = cursor.fetchone()
-                assert row is not None
+                if TYPE_CHECKING:  # pragma: no cover
+                    assert row is not None
                 (timeline, wal_position, replayed_location, received_location, _, pg_control_timeline) = row[:6]
 
         wal_position = self._wal_position(bool(timeline), wal_position, received_location, replayed_location)
@@ -1231,4 +1250,4 @@ class Postgresql(object):
         self.ensure_major_version_is_known()
         self.slots_handler.schedule()
         self.citus_handler.schedule_cache_rebuild()
-        self._sysid = None
+        self._sysid = ''
