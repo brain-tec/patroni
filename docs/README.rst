@@ -4,7 +4,7 @@
 Introduction
 ============
 
-Patroni originated as a fork of `Governor <https://github.com/compose/governor>`__, the project from Compose. It includes plenty of new features.
+Patroni is a template for high availability (HA) PostgreSQL solutions using Python. Patroni originated as a fork of `Governor <https://github.com/compose/governor>`__, the project from Compose. It includes plenty of new features.
 
 For an example of a Docker-based deployment with Patroni, see `Spilo <https://github.com/zalando/spilo>`__, currently in use at Zalando.
 
@@ -179,7 +179,7 @@ That said, here are some pieces of your infrastructure you should be sure to tes
 * Network (the network in front of your system as well as the NICs [physical or virtual] themselves)
 * Disk IO
 * file limits (nofile in Linux)
-* RAM. Even if you have oomkiller turned off as suggested, the unavailability of RAM could cause issues.
+* RAM. Even if you have oomkiller turned off, the unavailability of RAM could cause issues.
 * CPU
 * Virtualization Contention (overcommitting the hypervisor)
 * Any cgroup limitation (likely to be related to the above)

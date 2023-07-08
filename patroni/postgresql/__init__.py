@@ -26,6 +26,7 @@ from .slots import SlotsHandler
 from .sync import SyncHandler
 from .. import psycopg
 from ..async_executor import CriticalTask
+from ..collections import CaseInsensitiveSet
 from ..dcs import Cluster, Leader, Member
 from ..exceptions import PostgresConnectionException
 from ..utils import Retry, RetryFailedError, polling_loop, data_directory_is_empty, parse_int
@@ -216,6 +217,11 @@ class Postgresql(object):
 
         return ("SELECT " + self.TL_LSN + ", {2}").format(self.wal_name, self.lsn_name, extra)
 
+    @property
+    def available_gucs(self) -> CaseInsensitiveSet:
+        """GUCs available in this Postgres server."""
+        return self._get_gucs()
+
     def _version_file_exists(self) -> bool:
         return not self.data_directory_empty() and os.path.isfile(self._version_file)
 
@@ -232,8 +238,17 @@ class Postgresql(object):
         return 0
 
     def pgcommand(self, cmd: str) -> str:
-        """Returns path to the specified PostgreSQL command"""
-        return os.path.join(self._bin_dir, cmd)
+        """Return path to the specified PostgreSQL command.
+
+        .. note::
+            If ``postgresql.bin_name.*cmd*`` was configured by the user then that binary name is used, otherwise the
+            default binary name *cmd* is used.
+
+        :param cmd: the Postgres binary name to get path to.
+
+        :returns: path to Postgres binary named *cmd*.
+        """
+        return os.path.join(self._bin_dir, (self.config.get('bin_name', {}) or {}).get(cmd, cmd))
 
     def pg_ctl(self, cmd: str, *args: str, **kwargs: Any) -> bool:
         """Builds and executes pg_ctl command
@@ -1261,3 +1276,13 @@ class Postgresql(object):
         self.slots_handler.schedule()
         self.citus_handler.schedule_cache_rebuild()
         self._sysid = ''
+
+    def _get_gucs(self) -> CaseInsensitiveSet:
+        """Get all available GUCs based on ``postgres --describe-config`` output.
+
+        :returns: all available GUCs in the local Postgres server.
+        """
+        cmd = [self.pgcommand('postgres'), '--describe-config']
+        return CaseInsensitiveSet({
+            line.split('\t')[0] for line in subprocess.check_output(cmd).decode('utf-8').strip().split('\n')
+        })
