@@ -1193,10 +1193,13 @@ class Ha(object):
                     logger.warning('Failover is possible only to a specific candidate in a paused state')
                 else:
                     if self.is_synchronous_mode():
-                        # every sync_standby/the cnadidate if is in sync_standby
-                        # TODO: allow manual failover (=no leader specified) to async node
-                        members = [m for m in self.cluster.members if self.cluster.sync.matches(m.name)
-                                   and (not failover.candidate or m.name == failover.candidate)]
+                        # no candidate specified: every sync_standby
+                        # candidate specified: for switchover, only candidate if it is in sync_standby
+                        # for failover (no leader specified), only candidate (regardless sync_standby membership)
+                        members = [m for m in self.cluster.members
+                                   if self.cluster.sync.matches(m.name) and (not failover.candidate
+                                                                             or m.name == failover.candidate)
+                                   or not failover.leader and m.name == failover.candidate]
                         if failover.candidate and not members:
                             logger.warning('Failover candidate=%s does not match with sync_standbys=%s',
                                            failover.candidate, self.cluster.sync.sync_standby)
