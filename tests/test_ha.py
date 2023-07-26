@@ -278,8 +278,10 @@ class TestHa(PostgresInit):
         self.p.follow = true
         self.assertEqual(self.ha.run_cycle(), 'starting as a secondary')
         self.p.is_running = true
+        ha_dcs_orig_name = self.ha.dcs.__class__.__name__
         self.ha.dcs.__class__.__name__ = 'Raft'
         self.assertEqual(self.ha.run_cycle(), 'started as a secondary')
+        self.ha.dcs.__class__.__name__ = ha_dcs_orig_name
 
     def test_recover_former_primary(self):
         self.p.follow = false
@@ -883,7 +885,10 @@ class TestHa(PostgresInit):
         member = Member(0, 'test', 1, {'api_url': 'http://127.0.0.1:8011/patroni'})
         self.ha.fetch_node_status(member)
         member = Member(0, 'test', 1, {'api_url': 'http://localhost:8011/patroni'})
-        self.ha.fetch_node_status(member)
+        self.ha.patroni.request = Mock()
+        self.ha.patroni.request.return_value.data = b'{"wal":{"location":1},"role":"primary"}'
+        ret = self.ha.fetch_node_status(member)
+        self.assertFalse(ret.in_recovery)
 
     @patch.object(Rewind, 'pg_rewind', true)
     @patch.object(Rewind, 'check_leader_is_not_in_recovery', true)
