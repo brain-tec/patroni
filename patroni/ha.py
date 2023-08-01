@@ -147,7 +147,7 @@ class Ha(object):
         self._is_leader_lock = RLock()
         self._failsafe = Failsafe(patroni.dcs)
         self._was_paused = False
-        self._promote_time = 0
+        self._promote_timestamp = 0
         self._leader_timeline = None
         self.recovering = False
         self._async_response = CriticalTask()
@@ -197,7 +197,7 @@ class Ha(object):
         with self._is_leader_lock:
             self._is_leader = time.time() + self.dcs.ttl if value else 0
             if not value:
-                self._promote_time = 0
+                self._promote_timestamp = 0
 
     def load_cluster_from_dcs(self) -> None:
         cluster = self.dcs.get_cluster()
@@ -501,6 +501,7 @@ class Ha(object):
 
         role = 'replica'
         if self.has_lock() and not self.is_standby_cluster():
+            self._rewind.reset_state()  # we want to later trigger CHECKPOINT after promote
             msg = "starting as readonly because i had the session lock"
             node_to_follow = None
         else:
@@ -754,10 +755,10 @@ class Ha(object):
             # be postponed for `loop_wait` seconds, to give a chance to some replicas to start streaming.
             # In opposite case the /sync key will end up without synchronous nodes.
             if self.state_handler.is_leader():
-                if self._promote_time == 0 or time.time() - self._promote_time > self.dcs.loop_wait:
+                if self._promote_timestamp == 0 or time.time() - self._promote_timestamp > self.dcs.loop_wait:
                     self._process_quorum_replication()
-                if self._promote_time == 0:
-                    self._promote_time = time.time()
+                if self._promote_timestamp == 0:
+                    self._promote_timestamp = time.time()
         elif self.is_synchronous_mode():
             self._process_multisync_replication()
         else:
@@ -766,9 +767,9 @@ class Ha(object):
     def process_sync_replication_prepromote(self) -> bool:
         """Handle sync replication state before promote.
 
-        If quorum replication is requested and we can keep syncing to enough nodes satisfying the quorum invariant
+        If quorum replication is requested, and we can keep syncing to enough nodes satisfying the quorum invariant
         we can promote immediately and let normal quorum resolver process handle any membership changes later.
-        Otherwise we will just reset DCS state to ourselves and add replicas as they connect.
+        Otherwise, we will just reset DCS state to ourselves and add replicas as they connect.
 
         :returns: `True` if on success or `False` if failed to update /sync key in DCS.
         """
@@ -906,18 +907,14 @@ class Ha(object):
                 # postpone promotion until next cycle. TODO: trigger immediate retry of run_cycle.
                 return 'Postponing promotion because synchronous replication state was updated by somebody else'
             if self.state_handler.role not in ('master', 'promoted', 'primary'):
-                def on_success():
-                    self._rewind.reset_state()
-                    logger.info("cleared rewind state after becoming the leader")
-
                 def before_promote():
                     self.notify_citus_coordinator('before_promote')
 
                 with self._async_response:
                     self._async_response.reset()
+
                 self._async_executor.try_run_async('promote', self.state_handler.promote,
-                                                   args=(self.dcs.loop_wait, self._async_response,
-                                                         before_promote, on_success))
+                                                   args=(self.dcs.loop_wait, self._async_response, before_promote))
             return promote_message
 
     def fetch_node_status(self, member: Member) -> _MemberStatus:
@@ -1179,9 +1176,22 @@ class Ha(object):
                 return ret
 
         if self.state_handler.is_leader():
-            # in pause leader is the healthiest only when no initialize or sysid matches with initialize!
-            return not self.is_paused() or not self.cluster.initialize\
-                or self.state_handler.sysid == self.cluster.initialize
+            if self.is_paused():
+                # in pause leader is the healthiest only when no initialize or sysid matches with initialize!
+                return not self.cluster.initialize or self.state_handler.sysid == self.cluster.initialize
+
+            # We want to protect from the following scenario:
+            # 1. node1 is stressed so much that heart-beat isn't running regularly and the leader lock expires.
+            # 2. node2 promotes, gets heavy load and the situation described in 1 repeats.
+            # 3. Patroni on node1 comes back, notices that Postgres is running as primary but there is
+            #    no leader key and "happily" acquires the leader lock.
+            # That is, node1 discarded promotion of node2. To avoid it we want to detect timeline change.
+            my_timeline = self.state_handler.get_primary_timeline()
+            if my_timeline < self.cluster.timeline:
+                logger.warning('My timeline %s is behind last known cluster timeline %s',
+                               my_timeline, self.cluster.timeline)
+                return False
+            return True
 
         if self.is_paused():
             return False
@@ -1796,6 +1806,9 @@ class Ha(object):
             else:
                 if self._was_paused:
                     self.state_handler.schedule_sanity_checks_after_pause()
+                    # during pause people could manually do something with Postgres, therefore we want
+                    # to double check rewind conditions on replicas and maybe run CHECKPOINT on the primary
+                    self._rewind.reset_state()
                 self._was_paused = False
 
             if not self.cluster.has_member(self.state_handler.name):
