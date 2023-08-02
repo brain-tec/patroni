@@ -6,9 +6,10 @@ import socket
 import stat
 import time
 
+from contextlib import contextmanager
 from urllib.parse import urlparse, parse_qsl, unquote
 from types import TracebackType
-from typing import Any, Collection, Dict, List, Optional, Union, Tuple, Type, TYPE_CHECKING
+from typing import Any, Collection, Dict, Iterator, List, Optional, Union, Tuple, Type, TYPE_CHECKING
 
 from .validator import recovery_parameters, transform_postgresql_parameter_value, transform_recovery_parameter_value
 from ..collections import CaseInsensitiveDict, CaseInsensitiveSet
@@ -16,7 +17,7 @@ from ..dcs import Leader, Member, RemoteMember, slot_name_from_member_name
 from ..exceptions import PatroniFatalException
 from ..file_perm import pg_perm
 from ..utils import compare_values, parse_bool, parse_int, split_host_port, uri, validate_directory, is_subpath
-from ..validator import IntValidator
+from ..validator import IntValidator, EnumValidator
 
 if TYPE_CHECKING:  # pragma: no cover
     from . import Postgresql
@@ -259,12 +260,12 @@ def _false_validator(value: Any) -> bool:
     return False
 
 
-def _wal_level_validator(value: Any) -> bool:
-    return str(value).lower() in ('hot_standby', 'replica', 'logical')
-
-
 def _bool_validator(value: Any) -> bool:
     return parse_bool(value) is not None
+
+
+def _bool_is_true_validator(value: Any) -> bool:
+    return parse_bool(value) is True
 
 
 class ConfigHandler(object):
@@ -287,8 +288,8 @@ class ConfigHandler(object):
         'listen_addresses': (None, _false_validator, 90100),
         'port': (None, _false_validator, 90100),
         'cluster_name': (None, _false_validator, 90500),
-        'wal_level': ('hot_standby', _wal_level_validator, 90100),
-        'hot_standby': ('on', _false_validator, 90100),
+        'wal_level': ('hot_standby', EnumValidator(('hot_standby', 'replica', 'logical')), 90100),
+        'hot_standby': ('on', _bool_is_true_validator, 90100),
         'max_connections': (100, IntValidator(min=25), 90100),
         'max_wal_senders': (10, IntValidator(min=3), 90100),
         'wal_keep_segments': (8, IntValidator(min=1), 90100),
@@ -298,7 +299,7 @@ class ConfigHandler(object):
         'track_commit_timestamp': ('off', _bool_validator, 90500),
         'max_replication_slots': (10, IntValidator(min=4), 90400),
         'max_worker_processes': (8, IntValidator(min=2), 90400),
-        'wal_log_hints': ('on', _false_validator, 90400)
+        'wal_log_hints': ('on', _bool_is_true_validator, 90400)
     })
 
     _RECOVERY_PARAMETERS = CaseInsensitiveSet(recovery_parameters.keys())
@@ -368,10 +369,29 @@ class ConfigHandler(object):
             configuration.append('pg_ident.conf')
         return configuration
 
-    def set_file_permissions(self, file_name: str) -> None:
-        if is_subpath(self._postgresql.data_dir, file_name):
+    def set_file_permissions(self, filename: str) -> None:
+        """Set permissions of file *filename* according to the expected permissions if it resides under PGDATA.
+
+        .. note::
+            Do nothing if the file is not under PGDATA.
+
+        :param filename: path to a file which permissions might need to be adjusted.
+        """
+        if is_subpath(self._postgresql.data_dir, filename):
             pg_perm.set_permissions_from_data_directory(self._postgresql.data_dir)
-            os.chmod(file_name, pg_perm.file_create_mode)
+            os.chmod(filename, pg_perm.file_create_mode)
+
+    @contextmanager
+    def config_writer(self, filename: str) -> Iterator[ConfigWriter]:
+        """Create :class:`ConfigWriter` object and set permissions on a *filename*.
+
+        :param filename: path to a config file.
+
+        :yields: :class:`ConfigWriter` object.
+        """
+        with ConfigWriter(filename) as writer:
+            yield writer
+        self.set_file_permissions(filename)
 
     def save_configuration_files(self, check_custom_bootstrap: bool = False) -> bool:
         """
@@ -418,8 +438,7 @@ class ConfigHandler(object):
         if self._postgresql.enforce_hot_standby_feedback:
             configuration['hot_standby_feedback'] = 'on'
 
-        with ConfigWriter(self._postgresql_conf) as f:
-            self.set_file_permissions(self._postgresql_conf)
+        with self.config_writer(self._postgresql_conf) as f:
             include = self._config.get('custom_conf') or self._postgresql_base_conf_name
             f.writeline("include '{0}'\n".format(ConfigWriter.escape(include)))
             for name, value in sorted((configuration).items()):
@@ -448,7 +467,6 @@ class ConfigHandler(object):
     def append_pg_hba(self, config: List[str]) -> bool:
         if not self.hba_file and not self._config.get('pg_hba'):
             with open(self._pg_hba_conf, 'a') as f:
-                self.set_file_permissions(self._pg_hba_conf)
                 f.write('\n{}\n'.format('\n'.join(config)))
             self.set_file_permissions(self._pg_hba_conf)
         return True
@@ -470,16 +488,14 @@ class ConfigHandler(object):
                                   self.local_replication_address['host'], self.local_replication_address['port'],
                                   0, socket.SOCK_STREAM, socket.IPPROTO_TCP)})
 
-            with ConfigWriter(self._pg_hba_conf) as f:
-                self.set_file_permissions(self._pg_hba_conf)
+            with self.config_writer(self._pg_hba_conf) as f:
                 for address, t in addresses.items():
                     f.writeline((
                         '{0}\treplication\t{1}\t{3}\ttrust\n'
                         '{0}\tall\t{2}\t{3}\ttrust'
                     ).format(t, self.replication['username'], self._superuser.get('username') or 'all', address))
         elif not self.hba_file and self._config.get('pg_hba'):
-            with ConfigWriter(self._pg_hba_conf) as f:
-                self.set_file_permissions(self._pg_hba_conf)
+            with self.config_writer(self._pg_hba_conf) as f:
                 f.writelines(self._config['pg_hba'])
             return True
 
@@ -492,8 +508,7 @@ class ConfigHandler(object):
         """
 
         if not self.ident_file and self._config.get('pg_ident'):
-            with ConfigWriter(self._pg_ident_conf) as f:
-                self.set_file_permissions(self._pg_ident_conf)
+            with self.config_writer(self._pg_ident_conf) as f:
                 f.writelines(self._config['pg_ident'])
             return True
 
@@ -830,8 +845,7 @@ class ConfigHandler(object):
             self._current_recovery_params = CaseInsensitiveDict({n: [v, restart_required(n), self._postgresql_conf]
                                                                  for n, v in recovery_params.items()})
         else:
-            with ConfigWriter(self._recovery_conf) as f:
-                self.set_file_permissions(self._recovery_conf)
+            with self.config_writer(self._recovery_conf) as f:
                 self._write_recovery_params(f, recovery_params)
 
     def remove_recovery_conf(self) -> None:
