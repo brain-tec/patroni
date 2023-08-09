@@ -750,7 +750,6 @@ class TestHa(PostgresInit):
         self.p.is_leader = true
         self.ha.has_lock = true
         self.ha.is_synchronous_mode = true
-        self.ha.is_failover_possible = false
         self.ha.process_sync_replication = Mock()
         self.ha.cluster = get_cluster_initialized_with_leader(Failover(0, self.p.name, 'a', None), (self.p.name, None))
         self.assertEqual('no action. I am (postgresql0), the leader with the lock', self.ha.run_cycle())
@@ -1428,6 +1427,7 @@ class TestHa(PostgresInit):
     @patch('os.open', Mock())
     @patch('os.fsync', Mock())
     @patch('os.close', Mock())
+    @patch('os.chmod', Mock())
     @patch('os.rename', Mock())
     @patch('patroni.postgresql.Postgresql.is_starting', Mock(return_value=False))
     @patch('builtins.open', mock_open())
