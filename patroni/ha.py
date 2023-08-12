@@ -147,8 +147,8 @@ class Ha(object):
         self.cluster = Cluster.empty()
         self.global_config = self.patroni.config.get_global_config(None)
         self.old_cluster = Cluster.empty()
-        self._is_leader = False
-        self._is_leader_lock = RLock()
+        self._leader_expiry = 0
+        self._leader_expiry_lock = RLock()
         self._failsafe = Failsafe(patroni.dcs)
         self._was_paused = False
         self._leader_timeline = None
@@ -193,12 +193,20 @@ class Ha(object):
         return self.global_config.is_standby_cluster
 
     def is_leader(self) -> bool:
-        with self._is_leader_lock:
-            return self._is_leader > time.time()
+        """:returns: `True` if the current node is the leader, based on expiration set when it last held the key."""
+        with self._leader_expiry_lock:
+            return self._leader_expiry > time.time()
 
     def set_is_leader(self, value: bool) -> None:
-        with self._is_leader_lock:
-            self._is_leader = time.time() + self.dcs.ttl if value else 0
+        """Update the current node's view of it's own leadership status.
+
+        Will update the expiry timestamp to match the dcs ttl if setting leadership to true,
+        otherwise will set the expiry to the past to immediately invalidate.
+
+        :param value: is the current node the leader.
+        """
+        with self._leader_expiry_lock:
+            self._leader_expiry = time.time() + self.dcs.ttl if value else 0
 
     def sync_mode_is_active(self) -> bool:
         """Check whether synchronous replication is requested and already active.
@@ -1078,7 +1086,7 @@ class Ha(object):
 
     def _delete_leader(self, last_lsn: Optional[int] = None) -> None:
         self.set_is_leader(False)
-        self.dcs.delete_leader(last_lsn)
+        self.dcs.delete_leader(self.cluster.leader, last_lsn)
         self.dcs.reset_cluster()
 
     def release_leader_key_voluntarily(self, last_lsn: Optional[int] = None) -> None:
@@ -1874,7 +1882,7 @@ class Ha(object):
                     # location, we can remove the leader key and allow them to start leader race.
 
                     if self.is_failover_possible(cluster_lsn=checkpoint_location):
-                        self.dcs.delete_leader(checkpoint_location)
+                        self.dcs.delete_leader(self.cluster.leader, checkpoint_location)
                         status['deleted'] = True
                     else:
                         self.dcs.write_leader_optime(checkpoint_location)
@@ -1891,7 +1899,7 @@ class Ha(object):
             if not self.state_handler.is_running():
                 if self.is_leader() and not status['deleted']:
                     checkpoint_location = self.state_handler.latest_checkpoint_location()
-                    self.dcs.delete_leader(checkpoint_location)
+                    self.dcs.delete_leader(self.cluster.leader, checkpoint_location)
                 self.touch_member()
             else:
                 # XXX: what about when Patroni is started as the wrong user that has access to the watchdog device
