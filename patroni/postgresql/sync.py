@@ -158,11 +158,11 @@ class _SyncState(NamedTuple):
 
     :ivar sync_type: possible values: 'off', 'priority', 'quorum'
     :ivar numsync: how many nodes are required to be synchronous (according to ``synchronous_standby_names``).
-                   Is ``0`` in case if ``synchronous_standby_names`` value is invalid or has ``*``.
+                   Is ``0`` if ``synchronous_standby_names`` value is invalid or contains ``*``.
     :ivar numsync_confirmed: how many nodes are known to be synchronous according to the ``pg_stat_replication``
                              view. Only nodes that caught up with the ``SyncHandler._primary_flush_lsn` are counted.
     :ivar sync: collection of synchronous node names. In case of quorum commit all nodes listed
-                in ``synchronous_standby_names`` or nodes that are confirmed to be synchronous according
+                in ``synchronous_standby_names``, otherwise nodes that are confirmed to be synchronous according
                 to the `pg_stat_replication` view.
     :ivar active: collection of node names that are streaming and have no restrictions to become synchronous.
     """
@@ -202,7 +202,7 @@ class _ReplicaList(List[_Replica]):
     swapping, but only if lag on this member is exceeding a threshold (``maximum_lag_on_syncnode``).
 
     :ivar max_lsn: maximum value of ``_Replica.lsn`` among all values. In case if there is just one
-                   element in the list we take value of ``pg_current_wal_lsn()``.
+                   element in the list we take value of ``pg_current_wal_flush_lsn()``.
     """
 
     def __init__(self, postgresql: 'Postgresql', cluster: Cluster) -> None:
@@ -234,10 +234,10 @@ class _ReplicaList(List[_Replica]):
                                      row['sync_state'], row[sort_col], bool(member.nofailover)))
 
         # Prefer replicas that are in state ``sync`` and with higher values of ``write``/``flush``/``replay`` LSN.
-        self.sort(key=lambda r: (r.nofailover, r.sync_state, r.lsn), reverse=True)
+        self.sort(key=lambda r: (r.sync_state, r.lsn), reverse=True)
 
-        # When checking *maximum_lag_on_syncnode* we want to compare with the most
-        # up-to-date replica or with cluster LSN if there is only one replica.
+        # When checking ``maximum_lag_on_syncnode`` we want to compare with the most
+        # up-to-date replica otherwise with cluster LSN if there is only one replica.
         self.max_lsn = max(self, key=lambda x: x.lsn).lsn if len(self) > 1 else postgresql.last_operation()
 
 
@@ -317,19 +317,19 @@ END;$$""")
                     self._ready_replicas[replica.application_name] = replica.pid
 
     def current_state(self, cluster: Cluster) -> _SyncState:
-        """Finds best candidates to be the synchronous standbys.
+        """Find the best candidates to be the synchronous standbys.
 
         Current synchronous standby is always preferred, unless it has disconnected or does not want to be a
         synchronous standby any longer.
 
         Standbys are selected based on values from the global configuration:
 
-            - `maximum_lag_on_syncnode`: would help swapping unhealthy sync replica in case it stops
+            - ``maximum_lag_on_syncnode``: would help swapping unhealthy sync replica in case it stops
               responding (or hung). Please set the value high enough, so it won't unnecessarily swap sync
-              standbys during high loads. Any value less or equal to 0 keeps the behavior backwards compatible.
+              standbys during high loads. Any value less or equal to ``0`` keeps the behavior backwards compatible.
               Please note that it will also not swap sync standbys when all replicas are hung.
 
-            - `synchronous_node_count`: controls how many nodes should be set as synchronous.
+            - ``synchronous_node_count``: controls how many nodes should be set as synchronous.
 
         :param cluster: current cluster topology from DCS
 
@@ -378,7 +378,7 @@ END;$$""")
             active)
 
     def set_synchronous_standby_names(self, sync: Collection[str], num: Optional[int] = None) -> None:
-        """Constructs and sets "synchronous_standby_names" GUC value.
+        """Constructs and sets ``synchronous_standby_names`` GUC value.
 
         :param sync: set of nodes to sync to
         :param num: specifies number of nodes to sync to. The *num* is set only in case if quorum commit is enabled
