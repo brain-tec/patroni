@@ -1,4 +1,4 @@
-"""Tags handling"""
+"""Tags handling."""
 import abc
 
 from typing import Any, Dict, Optional
@@ -32,11 +32,15 @@ class Tags(abc.ABC):
     @property
     @abc.abstractmethod
     def tags(self) -> Dict[str, Any]:
+        """Configured tags.
+
+        Must be implemented in a child class.
+        """
         raise NotImplementedError  # pragma: no cover
 
     @property
     def clonefrom(self) -> bool:
-        """``True`` if ``clonefrom`` tag is ``True``."""
+        """``True`` if ``clonefrom`` tag is ``True``, else ``False``."""
         return self.tags.get('clonefrom', False)
 
     @property
