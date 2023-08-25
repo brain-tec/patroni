@@ -6,7 +6,6 @@ from threading import Condition, Event, Thread
 from urllib.parse import urlparse
 from typing import Any, Collection, Dict, Iterator, List, Optional, Union, Set, Tuple, TYPE_CHECKING
 
-from .connection import Connection
 from ..dcs import CITUS_COORDINATOR_GROUP_ID, Cluster
 from ..psycopg import connect, quote_ident
 
@@ -22,9 +21,9 @@ class PgDistNode:
 
     .. note::
 
-        Unlike "noderole" possible values of ``role`` are 'primary', 'secondary', and 'demoted'.
+        Unlike "noderole" possible values of ``role`` are ``primary``, ``secondary``, and ``demoted``.
         The last one is used to pause client connections on the coordinator to the worker by
-        appending '-demoted' suffix to the "nodename". The actual "noderole" in DB remains 'primary'.
+        appending ``-demoted`` suffix to the "nodename". The actual "noderole" in DB remains ``primary``.
 
     :ivar host: "nodename" value
     :ivar port: "nodeport" value
@@ -48,17 +47,16 @@ class PgDistNode:
     def __hash__(self) -> int:
         """Defines a hash function to put :class:`PgDistNode` objects to :class:`PgDistGroup` set-like object.
 
-        We use (*host*, *port*) tuple here because it is one of the UNIQUE constraints on the "pg_dist_node" table.
-        The *role* value is irrelevant here because nodes may change their roles.
+        .. note::
+            We use (:attr:`host`, :attr:`port`) tuple here because it is one of the UNIQUE constraints on the
+            "pg_dist_node" table. The :attr:`role` value is irrelevant here because nodes may change their roles.
         """
         return hash((self.host, self.port))
 
     def __eq__(self, other: Any) -> bool:
         """Defines a comparison function.
 
-        It is used exclusively to support overriden :func:``PgDistNode.__hash__``.
-
-        :returns: ``True`` if *host* and *port* between two instances are the same.
+        :returns: ``True`` if :attr:`host` and :attr:`port` between two instances are the same.
         """
         return isinstance(other, PgDistNode) and self.host == other.host and self.port == other.port
 
@@ -72,9 +70,22 @@ class PgDistNode:
     def is_primary(self) -> bool:
         """Checks whether this object represents "primary" in a corresponding group.
 
-        :returns: `True` if this object represents "primary".
+        :returns: ``True`` if this object represents the ``primary``.
         """
         return self.role in ('primary', 'demoted')
+
+    def as_tuple(self, include_nodeid: bool = False) -> Tuple[str, int, str, Optional[int]]:
+        """Helper method to compare two :class:`PgDistGroup` objects.
+
+        .. note::
+
+            *include_nodeid* is set to ``True`` only in unit-tests.
+
+        :param include_nodeid: whether :attr:`nodeid` should be taken into account when comparison is performed.
+
+        :returns: :class:`tuple` object with :attr:`host`, :attr:`port`, :attr:`role`, and optionally :attr:`nodeid`.
+        """
+        return self.host, self.port, self.role, (self.nodeid if include_nodeid else None)
 
 
 class PgDistGroup(Set[PgDistNode]):
@@ -82,71 +93,58 @@ class PgDistGroup(Set[PgDistNode]):
 
     This class implements a set of methods to compare topology and if it is necessary
     to transition from the old to the new topology in a "safe" manner:
-    - register new primary/secondaries
-    - replace gone secondaries with added
-    - failover and switchover
 
-    Typically there will be at least one :class:`PgDistNode` object registered ('primary').
-    In adding to that there could be some "secondaries".
+        * register new primary/secondaries
+        * replace gone secondaries with added secondaries
+        * failover and switchover
 
-    :ivar failover: whether as a result of :func:`transition` method call the "primary" row should be updated.
-    :ivar group: the "groupid" from "pg_dist_node"
+    Typically there will be at least one :class:`PgDistNode` object registered (``primary``).
+    In addition to that there could be one or more ``secondary`` nodes.
+
+    :ivar failover: whether the ``primary`` row should be updated as a result of :func:`transition` method call.
+    :ivar groupid: the "groupid" from "pg_dist_node".
     """
 
-    def __init__(self, group: int, nodes: Optional[Collection[PgDistNode]] = None) -> None:
+    def __init__(self, groupid: int, nodes: Optional[Collection[PgDistNode]] = None) -> None:
         """Creates a :class:`PgDistGroup` object based on given arguments.
 
-        :param group: the groupid from "pg_dist_node".
-        :param nodes: a collection of :class:`PgDistNode` objects that belog to a *group*.
+        :param groupid: the groupid from "pg_dist_node".
+        :param nodes: a collection of :class:`PgDistNode` objects that belog to a *groupid*.
         """
         self.failover = False
-        self.group = group
+        self.groupid = groupid
 
         if nodes:
             self.update(nodes)
 
-    @staticmethod
-    def _node_hash(node: PgDistNode, include_nodeid: bool = False) -> Tuple[str, int, str, Optional[int]]:
-        """Helper function to compare two :class:`PgDistGroup` objects.
-
-        .. note::
-
-            *include_nodeid* is set to `True` only in unit-tests.
-
-        :param node: the PgDistNode we want to build hash for.
-        :param include_nodeid: whether *nodeid* should be taken into account when comparison is performed.
-        :returns: :class:`tuple` object with *host*, *port*, *role*, and optionally *nodeid*
-        """
-        return node.host, node.port, node.role, (node.nodeid if include_nodeid else None)
-
     def equals(self, other: 'PgDistGroup', check_nodeid: bool = False) -> bool:
         """Compares two :class:`PgDistGroup` objects.
 
-        .. note::
-
-            Normally only *host*, *port*, and *role* values are compared for all :class:`PgDistNode` objects.
-            But, optionally it can also compare *nodeid* if *check_nodeid* if set to `True` (used only in unit-tests).
-
         :param other: what we want to compare with.
-        :param check_nodeid: whether *nodeid* should be compared in addition to *host*, *port*, and *role*.
-        :returns: `True` if all two objects are identical.
+        :param check_nodeid: whether :attr:`PgDistNode.nodeid` should be compared in addition to
+                             :attr:`PgDistNode.host`, :attr:`PgDistNode.port`, and :attr:`PgDistNode.role`.
+
+        :returns: ``True`` if two :class:`PgDistGroup` objects are fully identical.
         """
-        return set(self._node_hash(v, check_nodeid) for v in self)\
-            == set(self._node_hash(v, check_nodeid) for v in other)
+        return self.groupid == other.groupid\
+            and set(v.as_tuple(check_nodeid) for v in self) == set(v.as_tuple(check_nodeid) for v in other)
 
     def primary(self) -> Optional[PgDistNode]:
-        """Finds and returns :class:`PgDistNode` object that represents "primary"."""
+        """Finds and returns :class:`PgDistNode` object that represents the "primary".
+
+        :returns: :class:`PgDistNode` object which represents the "primary" or ``None`` if not found.
+        """
         return next(iter(v for v in self if v.is_primary()), None)
 
     def get(self, value: PgDistNode) -> Optional[PgDistNode]:
-        """Performs a lookup of the actual value in a given set.
+        """Performs a lookup of the actual value in a set.
 
         .. note::
-            It is necessary because :func:`__hash__` and :func:`__eq__` methods in :class:`PgDistNode`
-            are redefined and effectively they check only *host* and *port* attributes.
+            It is necessary because :func:`__hash__` and :func:`__eq__` methods in :class:`PgDistNode` are
+            redefined and effectively they check only :attr:`PgDistNode.host` and :attr:`PgDistNode.port` attributes.
 
         :param value: the key we search for.
-        :returns: the actual value from this :class:`set` object.
+        :returns: the actual :class:`PgDistNode` value from this :class:`PgDistGroup` object or ``None`` if not found.
         """
         return next(iter(v for v in self if v == value), None)
 
@@ -154,7 +152,10 @@ class PgDistGroup(Set[PgDistNode]):
         """Compares this topology with the old one and yields transitions that transform the old to the new one.
 
         .. note::
-            In addition to the yielding transactions this method fills up *nodeid*
+            The actual yielded object is :class:`PgDistNode` that will be passed to
+            the :meth:`CitusHandler.update_node` to execute all transitions in a transaction.
+
+            In addition to the yielding transactions this method fills up :attr:`PgDistNode.nodeid`
             attribute for nodes that are presented in the old and in the new topology.
 
             There are a few simple rules/constraints that are imposed by Citus and must be followed:
@@ -163,11 +164,14 @@ class PgDistGroup(Set[PgDistNode]):
             - the "primary" row in "pg_dist_node" always keeps the nodeid (unless it is
               removed, but it is not supported by Patroni).
 
-            - "nodename", "nodeport" must be unique across all rows in the "pg_dist_node".
+            - "nodename", "nodeport" must be unique across all rows in the "pg_dist_node". This means that
+              every time we want to change the nodeid of an existing node (i.e. to change it from secondary
+              to primary), we should first write some other "nodename"/"nodeport" to the row it's currently in.
 
-            - updating "broken" nodes always works and metadata is synced asynchnonously after commit.
+            - updating "broken" nodes always works and metadata is synced asynchnonously after the commit.
 
-        Following these rules below is an example of the switchover between node1 (primary) and node2 (secondary).
+        Following these rules below is an example of the switchover between node1 (primary, nodeid=4)
+        and node2 (secondary, nodeid=5).
 
         .. code-block:: SQL
 
@@ -177,7 +181,7 @@ class PgDistGroup(Set[PgDistNode]):
                 SELECT citus_update_node(4, 'node2', 5432);
             COMMIT;
 
-        :param old: the last know topology registered in "pg_dist_node" for a given *group*
+        :param old: the last known topology registered in "pg_dist_node" for a given :attr:`groupid`.
 
         :yields: :class:`PgDistNode` objects that must be updated/added/removed in "pg_dist_node".
         """
@@ -191,11 +195,12 @@ class PgDistGroup(Set[PgDistNode]):
         added_nodes = self - old - {new_primary}
 
         if not old_primary:
+            # We did not have any nodes in the group yet and we're adding one now
             yield new_primary
         elif old_primary == new_primary:
             new_primary.nodeid = old_primary.nodeid
             # Controlled switchover with pausing client connections.
-            # Achived by updating the primary row and putting hostname = '${host}-demoted' in a transaction.
+            # Achieved by updating the primary row and putting hostname = '${host}-demoted' in a transaction.
             if old_primary.role != new_primary.role:
                 self.failover = True
                 yield new_primary
@@ -239,12 +244,12 @@ class PgDistGroup(Set[PgDistNode]):
             new_primary.nodeid = old_primary.nodeid
             yield new_primary
 
-            # The new primary was never registered as a standby and there are secondaries that gone away.
-            # Since nodes can't be removed while metadata isn't synced we have to temporary "add" the old primary back.
+            # The new primary was never registered as a standby and there are secondaries that have gone away. Since
+            # nodes can't be removed while metadata isn't synced we have to temporarily "add" the old primary back.
             if not new_primary_old_node and gone_nodes:
                 # We were in the middle of controlled switchover while the primary disappeared.
                 # If there are any gone nodes that can't be reused for new secondaries we will
-                # use one of them to temporary "add" the old primary back as a secondary.
+                # use one of them to temporarily "add" the old primary back as a secondary.
                 if not old_primary_new_node and old_primary.role == 'demoted' and len(gone_nodes) > len(added_nodes):
                     old_primary_new_node = PgDistNode(old_primary.host, old_primary.port, 'secondary')
                     self.add(old_primary_new_node)
@@ -266,23 +271,33 @@ class PgDistGroup(Set[PgDistNode]):
             a.nodeid = gone_nodes.pop().nodeid
             yield a
 
-        # Remove remaining nodes that are gone, but only in case if metadata is in sync
-        for g in gone_nodes:
-            if self.failover:  # Otherwise add these nodes to the new topology
-                self.add(g)
-            else:
-                yield PgDistNode(g.host, g.port, '')
+        # Adding or removing nodes operations are executed on primaries in all Citus groups in 2PC.
+        # If we know that the primary was updated (self.failover is True) that automatically means that
+        # adding/removing nodes calls will fail and the whole transaction will be aborted. Therefore
+        # we discard operations that add/remove secondaries if we know that the primary was just updated.
+        # The inconsistency will be automatically resolved on the next Patroni heartbeat loop.
 
-        # Add new nodes to the metadata, but only in case if metadata is in sync
-        for a in added_nodes:
-            if self.failover:
-                self.discard(a)  # Otherwise remove them from the new topology
+        # Remove remaining nodes that are gone, but only in case if metadata is in sync (self.failover is False).
+        for g in gone_nodes:
+            if not self.failover:
+                # Remove the node if we expect metadata to be in sync
+                yield PgDistNode(g.host, g.port, '')
             else:
+                # Otherwise add these nodes to the new topology
+                self.add(g)
+
+        # Add new nodes to the metadata, but only in case if metadata is in sync (self.failover is False).
+        for a in added_nodes:
+            if not self.failover:
+                # Add the node if we expect metadata to be in sync
                 yield a
+            else:
+                # Otherwise remove them from the new topology
+                self.discard(a)
 
 
 class PgDistTask(PgDistGroup):
-    """A "task" that represents the current or desired state of "pg_dist_node" for a provided *group*.
+    """A "task" that represents the current or desired state of "pg_dist_node" for a provided *groupid*.
 
     :ivar group: the "groupid" in "pg_dist_node".
     :ivar event: an "event" that resulted in creating this task.
@@ -292,17 +307,17 @@ class PgDistTask(PgDistGroup):
     :ivar deadline: the time in unix seconds when the transaction is allowed to be rolled back.
     """
 
-    def __init__(self, group: int, nodes: Optional[Collection[PgDistNode]], event: str,
+    def __init__(self, groupid: int, nodes: Optional[Collection[PgDistNode]], event: str,
                  timeout: Optional[float] = None, cooldown: Optional[float] = None) -> None:
         """Create a :class:`PgDistTask` object based on given arguments.
 
-        :param group: the groupid from "pg_dist_node".
-        :param nodes: a collection of :class:`PgDistNode` objects that belog to a *group*.
+        :param groupid: the groupid from "pg_dist_node".
+        :param nodes: a collection of :class:`PgDistNode` objects that belog to a *groupid*.
         :param event: an "event" that resulted in creating this task.
         :param timeout: a transaction timeout if the task resulted in starting a transaction.
         :param cooldown: the cooldown value for ``citus_update_node()`` UDF call.
         """
-        super(PgDistTask, self).__init__(group, nodes)
+        super(PgDistTask, self).__init__(groupid, nodes)
 
         # Event that is trying to change or changed the given row.
         # Possible values: before_demote, before_promote, after_promote.
@@ -343,7 +358,10 @@ class CitusHandler(Thread):
         self.daemon = True
         self._postgresql = postgresql
         self._config = config
-        self._connection = Connection()
+        if config:
+            self._connection = postgresql.connection_pool.get(
+                'citus', {'dbname': config['database'],
+                          'options': '-c statement_timeout=0 -c idle_in_transaction_session_timeout=0'})
         self._pg_dist_group: Dict[int, PgDistTask] = {}  # Cache of pg_dist_node: {groupid: PgDistTask()}
         self._tasks: List[PgDistTask] = []  # Requests to change pg_dist_group, every task is a `PgDistTask`
         self._in_flight: Optional[PgDistTask] = None  # Reference to the `PgDistTask` being changed in a transaction
@@ -362,12 +380,6 @@ class CitusHandler(Thread):
 
     def is_worker(self) -> bool:
         return self.is_enabled() and not self.is_coordinator()
-
-    def set_conn_kwargs(self, kwargs: Dict[str, Any]) -> None:
-        if isinstance(self._config, dict):  # self.is_enabled():
-            kwargs.update({'dbname': self._config['database'],
-                           'options': '-c statement_timeout=0 -c idle_in_transaction_session_timeout=0'})
-            self._connection.set_conn_kwargs(kwargs)
 
     def schedule_cache_rebuild(self) -> None:
         with self._condition:
@@ -434,15 +446,15 @@ class CitusHandler(Thread):
         self.add_task('after_promote', CITUS_COORDINATOR_GROUP_ID, cluster,
                       self._postgresql.name, self._postgresql.connection_string)
 
-        for group, worker in cluster.workers.items():
+        for groupid, worker in cluster.workers.items():
             leader = worker.leader
             if leader and leader.conn_url\
                     and leader.data.get('role') in ('master', 'primary') and leader.data.get('state') == 'running':
-                self.add_task('after_promote', group, worker, leader.name, leader.conn_url)
+                self.add_task('after_promote', groupid, worker, leader.name, leader.conn_url)
 
-    def find_task_by_group(self, group: int) -> Optional[int]:
+    def find_task_by_groupid(self, groupid: int) -> Optional[int]:
         for i, task in enumerate(self._tasks):
-            if task.group == group:
+            if task.groupid == groupid:
                 return i
 
     def pick_task(self) -> Tuple[Optional[int], Optional[PgDistTask]]:
@@ -453,22 +465,22 @@ class CitusHandler(Thread):
         1. If there is already a transaction in progress, pick a task
            that that will change already affected worker primary.
         2. If the coordinator address should be changed - pick a task
-           with group=0 (coordinators are always in group 0).
+           with groupid=0 (coordinators are always in groupid 0).
         3. Pick a task that is the oldest (first from the self._tasks)
         """
 
         with self._condition:
             if self._in_flight:
-                i = self.find_task_by_group(self._in_flight.group)
+                i = self.find_task_by_groupid(self._in_flight.groupid)
             else:
                 while True:
-                    i = self.find_task_by_group(CITUS_COORDINATOR_GROUP_ID)  # set_coordinator
+                    i = self.find_task_by_groupid(CITUS_COORDINATOR_GROUP_ID)  # set_coordinator
                     if i is None and self._tasks:
                         i = 0
                     if i is None:
                         break
                     task = self._tasks[i]
-                    if task == self._pg_dist_group.get(task.group):
+                    if task == self._pg_dist_group.get(task.groupid):
                         self._tasks.pop(i)  # nothing to do because cached version of pg_dist_group already matches
                     else:
                         break
@@ -476,7 +488,7 @@ class CitusHandler(Thread):
 
             return i, task
 
-    def update_node(self, group: int, node: PgDistNode, cooldown: float = 10000) -> None:
+    def update_node(self, groupid: int, node: PgDistNode, cooldown: float = 10000) -> None:
         if node.role not in ('primary', 'secondary', 'demoted'):
             self.query('SELECT pg_catalog.citus_remove_node(%s, %s)', node.host, node.port)
         elif node.nodeid is not None:
@@ -485,18 +497,18 @@ class CitusHandler(Thread):
                        node.nodeid, host, node.port, cooldown)
         elif node.role != 'demoted':
             node.nodeid = self.query("SELECT pg_catalog.citus_add_node(%s, %s, %s, %s, 'default')",
-                                     node.host, node.port, group, node.role)[0][0]
+                                     node.host, node.port, groupid, node.role)[0][0]
 
     def update_group(self, task: PgDistTask, transaction: bool) -> None:
         current_state = self._in_flight\
-            or self._pg_dist_group.get(task.group)\
-            or PgDistTask(task.group, set(), 'after_promote')
+            or self._pg_dist_group.get(task.groupid)\
+            or PgDistTask(task.groupid, set(), 'after_promote')
         transitions = list(task.transition(current_state))
         if transitions:
             if not transaction and len(transitions) > 1:
                 self.query('BEGIN')
             for node in transitions:
-                self.update_node(task.group, node, task.cooldown)
+                self.update_node(task.groupid, node, task.cooldown)
             if not transaction and len(transitions) > 1:
                 task.failover = False
                 self.query('COMMIT')
@@ -514,7 +526,7 @@ class CitusHandler(Thread):
             Read access to `self._in_flight` isn't protected because we know it can't be changed outside of our thread.
 
         :param task: reference to a :class:`PgDistTask` object that represents a row to be updated/created.
-        :returns: `True` if the row was succesfully created/updated or transaction in progress
+        :returns: ``True`` if the row was succesfully created/updated or transaction in progress
             was committed as an indicator that the `self._pg_dist_group` cache should be updated,
             or, if the new transaction was opened, this method returns `False`.
         """
@@ -550,7 +562,7 @@ class CitusHandler(Thread):
             with self._condition:
                 if self._tasks:
                     if update_cache:
-                        self._pg_dist_group[task.group] = task
+                        self._pg_dist_group[task.groupid] = task
 
                     if update_cache is False:  # an indicator that process_tasks has started a transaction
                         self._in_flight = task
@@ -584,7 +596,7 @@ class CitusHandler(Thread):
 
     def _add_task(self, task: PgDistTask) -> bool:
         with self._condition:
-            i = self.find_task_by_group(task.group)
+            i = self.find_task_by_groupid(task.groupid)
 
             # The `PgDistTask.timeout` == None is an indicator that it was scheduled from the sync_pg_dist_group().
             if task.timeout is None:
@@ -596,11 +608,11 @@ class CitusHandler(Thread):
                 # key is updated in DCS. Therefore it is possible that :func:`sync_pg_dist_group` will try to create a
                 # task based on the outdated values of "state"/"role". To solve it we introduce an artificial timeout.
                 # Only when the timeout is reached new tasks could be scheduled from sync_pg_dist_group()
-                if self._in_flight and self._in_flight.group == task.group and self._in_flight.timeout is not None\
+                if self._in_flight and self._in_flight.groupid == task.groupid and self._in_flight.timeout is not None\
                         and self._in_flight.deadline > time.time():
                     return False
 
-            # Override already existing task for the same worker group
+            # Override already existing task for the same worker groupid
             if i is not None:
                 if task != self._tasks[i]:
                     logger.debug('Overriding existing task: %s != %s', self._tasks[i], task)
@@ -608,8 +620,8 @@ class CitusHandler(Thread):
                     self._condition.notify()
                     return True
             # Add the task to the list if Worker node state is different from the cached `pg_dist_group`
-            elif self._schedule_load_pg_dist_group or task != self._pg_dist_group.get(task.group)\
-                    or self._in_flight and task.group == self._in_flight.group:
+            elif self._schedule_load_pg_dist_group or task != self._pg_dist_group.get(task.groupid)\
+                    or self._in_flight and task.groupid == self._in_flight.groupid:
                 logger.debug('Adding the new task: %s', task)
                 self._tasks.append(task)
                 self._condition.notify()
@@ -625,13 +637,13 @@ class CitusHandler(Thread):
         except Exception as e:
             logger.error('Failed to parse connection url %s: %r', conn_url, e)
 
-    def add_task(self, event: str, group: int, cluster: Cluster, leader_name: str, leader_url: str,
+    def add_task(self, event: str, groupid: int, cluster: Cluster, leader_name: str, leader_url: str,
                  timeout: Optional[float] = None, cooldown: Optional[float] = None) -> Optional[PgDistTask]:
         primary = self._pg_dist_node('demoted' if event == 'before_demote' else 'primary', leader_url)
         if not primary:
             return
 
-        task = PgDistTask(group, {primary}, event=event, timeout=timeout, cooldown=cooldown)
+        task = PgDistTask(groupid, {primary}, event=event, timeout=timeout, cooldown=cooldown)
         for member in cluster.members:
             secondary = self._pg_dist_node('secondary', member.conn_url)\
                 if member.name != leader_name and member.is_running and member.conn_url else None
@@ -657,8 +669,8 @@ class CitusHandler(Thread):
         if not isinstance(self._config, dict):  # self.is_enabled()
             return
 
-        conn_kwargs = self._postgresql.config.local_connect_kwargs
-        conn_kwargs['options'] = '-c synchronous_commit=local -c statement_timeout=0'
+        conn_kwargs = {**self._postgresql.connection_pool.conn_kwargs,
+                       'options': '-c synchronous_commit=local -c statement_timeout=0'}
         if self._config['database'] != self._postgresql.database:
             conn = connect(**conn_kwargs)
             try:
