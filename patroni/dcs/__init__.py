@@ -28,7 +28,7 @@ from ..tags import Tags
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import Config
 
-_SLOT_ADVANCE_AVAILABLE_VERSION = 110000
+SLOT_ADVANCE_AVAILABLE_VERSION = 110000
 CITUS_COORDINATOR_GROUP_ID = 0
 citus_group_re = re.compile('^(0|[1-9][0-9]*)$')
 slot_name_re = re.compile('^[a-z0-9_]{1,63}$')
@@ -350,6 +350,11 @@ class Member(Tags, NamedTuple('Member',
             except Exception:
                 logger.debug('Failed to parse Patroni version %s', version)
         return None
+
+    @property
+    def lsn(self) -> Optional[int]:
+        """Current LSN (receive/flush/replay)."""
+        return self.data.get('xlog_location')
 
 
 class RemoteMember(Member):
@@ -902,24 +907,42 @@ class Cluster(NamedTuple('Cluster',
         candidates = [m for m in self.members if m.clonefrom and m.is_running and m.name not in exclude]
         return candidates[randint(0, len(candidates) - 1)] if candidates else self.leader
 
+    @staticmethod
+    def is_physical_slot(value: Union[Any, Dict[str, Any]]) -> bool:
+        """Check whether provided configuration is for permanent physical replication slot.
+
+        :returns: ``True`` if this is a physical replication slot, otherwise ``False``.
+        """
+        return not value or isinstance(value, dict) and value.get('type', 'physical') == 'physical'
+
     @property
     def __permanent_slots(self) -> Dict[str, Union[Dict[str, Any], Any]]:
         """Dictionary of permanent replication slots with their known LSN."""
-        ret = deepcopy(self.config.permanent_slots if self.config else {})
-        # If primary reported flush LSN for permanent slots we want to enrich our structure with it
-        for name, lsn in (self.slots or {}).items():
-            if name in ret:
-                if not ret[name]:
-                    ret[name] = {}
-                if isinstance(ret[name], dict):
-                    ret[name]['lsn'] = lsn
+        leader = self.leader and self.leader.member
+        leader_name = slot_name_from_member_name(leader.name) if leader and leader.lsn else None
+
+        slots = self.slots or {}
+        ret: Dict[str, Union[Dict[str, Any], Any]] = deepcopy(self.config.permanent_slots if self.config else {})
+
+        for name, value in list(ret.items()):
+            if not value:
+                value = ret[name] = {}
+            if isinstance(value, dict):
+                if name in slots:
+                    # If primary reported flush LSN for permanent slots we want to enrich our structure with it
+                    value['lsn'] = slots[name]
+                elif self.is_physical_slot(value) and name == leader_name and leader and leader.lsn:
+                    # there is no slot on the leader for itself, use `lsn` from the member key.
+                    value['lsn'] = leader.lsn
+                else:
+                    # Don't let anyone set 'lsn' in the global configuration :)
+                    value.pop('lsn', None)
         return ret
 
     @property
     def __permanent_physical_slots(self) -> Dict[str, Any]:
         """Dictionary of permanent ``physical`` replication slots."""
-        return {name: value for name, value in self.__permanent_slots.items()
-                if not value or isinstance(value, dict) and value.get('type', 'physical') == 'physical'}
+        return {name: value for name, value in self.__permanent_slots.items() if self.is_physical_slot(value)}
 
     @property
     def __permanent_logical_slots(self) -> Dict[str, Any]:
@@ -999,7 +1022,7 @@ class Cluster(NamedTuple('Cluster',
                     continue
 
                 if value['type'] == 'logical' and value.get('database') and value.get('plugin'):
-                    if major_version < _SLOT_ADVANCE_AVAILABLE_VERSION:
+                    if major_version < SLOT_ADVANCE_AVAILABLE_VERSION:
                         disabled_permanent_logical_slots.append(name)
                     elif name in slots:
                         logger.error("Permanent logical replication slot {'%s': %s} is conflicting with"
@@ -1037,9 +1060,9 @@ class Cluster(NamedTuple('Cluster',
 
         if is_standby_cluster:
             return self.__permanent_physical_slots \
-                if major_version >= _SLOT_ADVANCE_AVAILABLE_VERSION or role == 'standby_leader' else {}
+                if major_version >= SLOT_ADVANCE_AVAILABLE_VERSION or role == 'standby_leader' else {}
 
-        return self.__permanent_slots if major_version >= _SLOT_ADVANCE_AVAILABLE_VERSION \
+        return self.__permanent_slots if major_version >= SLOT_ADVANCE_AVAILABLE_VERSION\
             or role in ('master', 'primary') else self.__permanent_logical_slots
 
     def _get_members_slots(self, my_name: str, role: str) -> Dict[str, Dict[str, str]]:
@@ -1095,9 +1118,9 @@ class Cluster(NamedTuple('Cluster',
         """
         members_slots: Dict[str, Dict[str, str]] = self._get_members_slots(my_name, 'replica')
         permanent_slots: Dict[str, Any] = self._get_permanent_slots(nofailover, 'replica', False,
-                                                                    _SLOT_ADVANCE_AVAILABLE_VERSION)
+                                                                    SLOT_ADVANCE_AVAILABLE_VERSION)
         slots = deepcopy(members_slots)
-        self._merge_permanent_slots(slots, permanent_slots, my_name, _SLOT_ADVANCE_AVAILABLE_VERSION)
+        self._merge_permanent_slots(slots, permanent_slots, my_name, SLOT_ADVANCE_AVAILABLE_VERSION)
         return len(slots) > len(members_slots)
 
     def _has_permanent_logical_slots(self, my_name: str, nofailover: bool) -> bool:
@@ -1108,7 +1131,7 @@ class Cluster(NamedTuple('Cluster',
 
         :returns: ``True`` if any detected replications slots are ``logical``, otherwise ``False``.
         """
-        slots = self.get_replication_slots(my_name, 'replica', nofailover, _SLOT_ADVANCE_AVAILABLE_VERSION).values()
+        slots = self.get_replication_slots(my_name, 'replica', nofailover, SLOT_ADVANCE_AVAILABLE_VERSION).values()
         return any(v for v in slots if v.get("type") == "logical")
 
     def should_enforce_hot_standby_feedback(self, my_name: str, nofailover: bool) -> bool:
