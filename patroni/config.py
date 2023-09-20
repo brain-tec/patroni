@@ -406,11 +406,11 @@ class Config(object):
         .. note:
             If the value is smaller than provided *min_value* we update the *config*.
 
-            This method may raise an exception is value isn't :class:`int` or cannot be castet to int.
+            This method may raise an exception if value isn't :class:`int` or cannot be casted to :class:`int`.
 
         :param config: :class:`dict` object with new global configuration.
         :param param: name of the configuration parameter we want to read/validate/adjust.
-        :param min_value: the minimal possible value that a given *param* could have.
+        :param min_value: the minimum possible value that a given *param* could have.
 
         :returns: an integer value which corresponds to a provided *param*.
         """
