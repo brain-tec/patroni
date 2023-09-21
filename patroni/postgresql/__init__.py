@@ -173,6 +173,7 @@ class Postgresql(object):
         """Returns the monitoring query with a fixed number of fields.
 
         The query text is constructed based on current state in DCS and PostgreSQL version:
+
         1. function names depend on version. wal/lsn for v10+ and xlog/location for pre v10.
         2. for primary we query timeline_id (extracted from pg_walfile_name()) and pg_current_wal_lsn()
         3. for replicas we query pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn(), and  pg_is_wal_replay_paused()
@@ -182,7 +183,8 @@ class Postgresql(object):
         7. if sync replication is enabled we query pg_stat_replication and aggregate the result.
            In addition to that we get current values of synchronous_commit and synchronous_standby_names GUCs.
 
-        If some conditions are not satisfied we simply put static values instead. E.g., NULL, 0, '', and so on."""
+        If some conditions are not satisfied we simply put static values instead. E.g., NULL, 0, '', and so on.
+        """
 
         extra = ", " + (("pg_catalog.current_setting('synchronous_commit'), "
                          "pg_catalog.current_setting('synchronous_standby_names'), "
@@ -550,7 +552,7 @@ class Postgresql(object):
                              r'lsn: ([0-9A-Fa-f]+/[0-9A-Fa-f]+), prev ([0-9A-Fa-f]+/[0-9A-Fa-f]+), '
                              r'.*?desc: (.+)', out.decode('utf-8'))
             if match:
-                return match.groups()
+                return match.group(1), match.group(2), match.group(3), match.group(4)
         return None, None, None, None
 
     def latest_checkpoint_location(self) -> Optional[int]:
@@ -1006,7 +1008,7 @@ class Postgresql(object):
             return None, None
 
     @contextmanager
-    def get_replication_connection_cursor(self, host: Optional[str] = None, port: int = 5432,
+    def get_replication_connection_cursor(self, host: Optional[str] = None, port: Union[int, str] = 5432,
                                           **kwargs: Any) -> Iterator[Union['cursor', 'Cursor[Any]']]:
         conn_kwargs = self.config.replication.copy()
         conn_kwargs.update(host=host, port=int(port) if port else None, user=conn_kwargs.pop('username'),
