@@ -24,6 +24,7 @@ import dateutil.parser
 from ..exceptions import PatroniFatalException
 from ..utils import deep_compare, uri
 from ..tags import Tags
+from ..utils import parse_int
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import Config
@@ -158,7 +159,7 @@ def get_dcs(config: Union['Config', Dict[str, Any]]) -> 'AbstractDCS':
     """Attempt to load a Distributed Configuration Store from known available implementations.
 
     .. note::
-        Using the list of available DCS modules returned by :func:`iter_dcs_modules` attempt to dynamically import and
+        Using the list of available DCS classes returned by :func:`iter_dcs_classes` attempt to dynamically
         instantiate the class that implements a DCS using the abstract class :class:`AbstractDCS`.
 
         Basic top-level configuration parameters retrieved from *config* are propagated to the DCS specific config
@@ -354,7 +355,7 @@ class Member(Tags, NamedTuple('Member',
     @property
     def lsn(self) -> Optional[int]:
         """Current LSN (receive/flush/replay)."""
-        return self.data.get('xlog_location')
+        return parse_int(self.data.get('xlog_location'))
 
 
 class RemoteMember(Member):
@@ -995,16 +996,20 @@ class Cluster(NamedTuple('Cluster',
     @property
     def __permanent_slots(self) -> Dict[str, Union[Dict[str, Any], Any]]:
         """Dictionary of permanent replication slots with their known LSN."""
-        slots = self.slots or {}
         ret: Dict[str, Union[Dict[str, Any], Any]] = deepcopy(self.config.permanent_slots if self.config else {})
 
+        members: Dict[str, int] = {slot_name_from_member_name(m.name): m.lsn or 0 for m in self.members}
+        slots: Dict[str, int] = {k: parse_int(v) or 0 for k, v in (self.slots or {}).items()}
         for name, value in list(ret.items()):
             if not value:
                 value = ret[name] = {}
             if isinstance(value, dict):
-                if name in slots:
-                    # If primary reported flush LSN for permanent slots we want to enrich our structure with it
-                    value['lsn'] = slots[name]
+                # for permanent physical slots we want to get MAX LSN from the `Cluster.slots` and from the
+                # member with the matching name. It is necessary because we may have the replication slot on
+                # the primary that is streaming from the other standby node using the `replicatefrom` tag.
+                lsn = max(members.get(name, 0) if self.is_physical_slot(value) else 0, slots.get(name, 0))
+                if lsn:
+                    value['lsn'] = lsn
                 else:
                     # Don't let anyone set 'lsn' in the global configuration :)
                     value.pop('lsn', None)

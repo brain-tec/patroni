@@ -604,7 +604,9 @@ class Ha(object):
         """
         # The standby leader or when there is no standby leader we want to follow
         # the remote member, except when there is no standby leader in pause.
-        if self.is_standby_cluster() and (self.has_lock(False) or self.cluster.is_unlocked() and not self.is_paused()):
+        if self.is_standby_cluster() \
+                and (cluster.leader and cluster.leader.name and cluster.leader.name == self.state_handler.name
+                     or cluster.is_unlocked() and not self.is_paused()):
             node_to_follow = self.get_remote_member()
         # If replicatefrom tag is set, try to follow the node mentioned there, otherwise, follow the leader.
         elif self.patroni.replicatefrom and self.patroni.replicatefrom != self.state_handler.name:
@@ -936,7 +938,7 @@ class Ha(object):
             replication slots while DCS is not accessible in order to avoid indefinite growth of ``pg_wal``.
 
         :returns: ``True`` if all members from the ``/failsafe`` topology agree that this node could continue to
-                  run as a ``primary``, or ``False`` if some of standby nodes are not accessible of don't agree.
+                  run as a ``primary``, or ``False`` if some of standby nodes are not accessible or don't agree.
         """
         failsafe = self.dcs.failsafe
         if not isinstance(failsafe, dict) or self.state_handler.name not in failsafe:
