@@ -698,7 +698,7 @@ class Ha(object):
         return self.global_config.is_synchronous_mode
 
     def is_quorum_commit_mode(self) -> bool:
-        """:returns: `True` if quorum commit replication is requested and "supported"."""
+        """``True`` if quorum commit replication is requested and "supported"."""
         return self.global_config.is_quorum_commit_mode and self.state_handler.supports_multiple_sync
 
     def is_failsafe_mode(self) -> bool:
@@ -732,8 +732,8 @@ class Ha(object):
     def _process_quorum_replication(self) -> None:
         """Process synchronous replication state when quorum commit is requested.
 
-        Synchronous standbys are registered in two places postgresql.conf and DCS. The order of updating them must
-        keep the invariant that `quorum + sync >= len(set(quorum pool)|set(sync pool))`. This is done using
+        Synchronous standbys are registered in two places: ``postgresql.conf`` and DCS. The order of updating them must
+        keep the invariant that ``quorum + sync >= len(set(quorum pool)|set(sync pool))``. This is done using
         :class:`QuorumStateResolver` that given a current state and set of desired synchronous nodes and replication
         level outputs changes to DCS and synchronous replication in correct order to reach the desired state.
         In case any of those steps causes an error we can just bail out and let next iteration rediscover the state
@@ -876,7 +876,7 @@ class Ha(object):
         we can promote immediately and let normal quorum resolver process handle any membership changes later.
         Otherwise, we will just reset DCS state to ourselves and add replicas as they connect.
 
-        :returns: `True` if on success or `False` if failed to update /sync key in DCS.
+        :returns: ``True`` if on success or ``False`` if failed to update /sync key in DCS.
         """
         if not self.is_synchronous_mode():
             self.disable_synchronous_replication()
@@ -1122,7 +1122,7 @@ class Ha(object):
 
         :param wal_position: Current wal position.
 
-        :returns `True` when node is lagging
+        :returns: ``True`` when node is lagging
         """
         lag = (self.cluster.last_lsn or 0) - wal_position
         return lag > self.global_config.maximum_lag_on_failover
@@ -1133,7 +1133,7 @@ class Ha(object):
         :param members: the list of nodes to check against
         :param check_replication_lag: whether to take the replication lag into account.
                                       If the lag exceeds configured threshold the node disqualifies itself.
-        :returns: `True` if the node is eligible to become the new leader. Since this method is executed
+        :returns: ``True`` if the node is eligible to become the new leader. Since this method is executed
                   on multiple nodes independently it is possible that multiple nodes could count
                   themselves as the healthiest because they received/replayed up to the same LSN,
                   but this is totally fine.
@@ -1187,10 +1187,21 @@ class Ha(object):
                     if not self.sync_mode_is_active() or not self.cluster.sync.leader_matches(st.member.name):
                         return False
                     logger.info('Ignoring the former leader being ahead of us')
-                # we want to count votes only from nodes with postgres up and running!
-                elif st.member.name in voting_set and st.wal_position > 0:
-                    logger.info('Got quorum vote from %s', st.member.name)
-                    quorum_votes += 1
+                elif st.wal_position > 0:  # we want to count votes only from nodes with postgres up and running!
+                    quorum_vote = st.member.name in voting_set
+                    low_priority = my_wal_position == st.wal_position \
+                        and self.patroni.failover_priority < st.failover_priority
+
+                    if low_priority and (not self.sync_mode_is_active() or quorum_vote):
+                        # There's a higher priority non-lagging replica
+                        logger.info(
+                            '%s has equally tolerable WAL position and priority %s, while this node has priority %s',
+                            st.member.name, st.failover_priority, self.patroni.failover_priority)
+                        return False
+
+                    if quorum_vote:
+                        logger.info('Got quorum vote from %s', st.member.name)
+                        quorum_votes += 1
 
         # When not in quorum commit we just want to return `True`.
         # In quorum commit the former leader is special and counted healthy even when there are no other nodes.
