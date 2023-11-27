@@ -77,6 +77,7 @@ class Postgresql(object):
         self.set_state('stopped')
 
         self._pending_restart = False
+        self._pending_restart_reason: Dict[str, Tuple[Any, Any]] = {}
         self.connection_pool = ConnectionPool()
         self._connection = self.connection_pool.get('heartbeat')
         self.citus_handler = CitusHandler(self, config.get('citus'))
@@ -319,8 +320,16 @@ class Postgresql(object):
     def pending_restart(self) -> bool:
         return self._pending_restart
 
-    def set_pending_restart(self, value: bool) -> None:
+    @property
+    def pending_restart_reason(self) -> Dict[str, Tuple[Any, Any]]:
+        return self._pending_restart_reason
+
+    def set_pending_restart(self, value: bool, diff_dict: Optional[Dict[str, Tuple[Any, Any]]] = None) -> None:
         self._pending_restart = value
+        if not value:
+            self._pending_restart_reason = {}
+        else:
+            self._pending_restart_reason.update(diff_dict or {})
 
     @property
     def sysid(self) -> str:
@@ -725,7 +734,7 @@ class Postgresql(object):
         self.set_role(role or self.get_postgres_role_from_data_directory())
 
         self.set_state('starting')
-        self._pending_restart = False
+        self.set_pending_restart(False)
 
         try:
             if not self.ensure_major_version_is_known():

@@ -117,7 +117,10 @@ class MockCursor(object):
             self.results = [(False, 2)]
         elif sql.startswith('SELECT pg_catalog.pg_postmaster_start_time'):
             self.results = [(datetime.datetime.now(tzutc),)]
-        elif sql.startswith('SELECT name, pg_catalog.current_setting(name) FROM pg_catalog.pg_settings'):
+        elif sql.endswith('AND pending_restart'):
+            self.results = []
+        elif (sql.startswith('SELECT name, pg_catalog.current_setting(name) FROM pg_catalog.pg_settings') and
+              not sql.endswith('AND pending_restart')):
             self.results = [('data_directory', 'data'),
                             ('hba_file', os.path.join('data', 'pg_hba.conf')),
                             ('ident_file', os.path.join('data', 'pg_ident.conf')),
@@ -138,7 +141,7 @@ class MockCursor(object):
                             ('shared_buffers', '16384', '8kB', 'integer', 'postmaster'),
                             ('wal_buffers', '-1', '8kB', 'integer', 'postmaster'),
                             ('max_connections', '100', None, 'integer', 'postmaster'),
-                            ('max_prepared_transactions', '0', None, 'integer', 'postmaster'),
+                            ('max_prepared_transactions', '200', None, 'integer', 'postmaster'),
                             ('max_worker_processes', '8', None, 'integer', 'postmaster'),
                             ('max_locks_per_transaction', '64', None, 'integer', 'postmaster'),
                             ('max_wal_senders', '5', None, 'integer', 'postmaster'),

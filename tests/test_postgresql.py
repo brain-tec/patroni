@@ -1,4 +1,5 @@
 import datetime
+import mock
 import os
 import psutil
 import re
@@ -559,31 +560,78 @@ class TestPostgresql(BaseTestPostgresql):
 
     @patch('time.sleep', Mock())
     @patch.object(Postgresql, 'is_running', Mock(return_value=True))
-    def test_reload_config(self):
+    @patch('patroni.postgresql.config.logger.info')
+    def test_reload_config(self, mock_logger):
+        # Nothing changed
         parameters = self._PARAMETERS.copy()
-        parameters.pop('f.oo')
+        config = {'use_unix_socket': True, 'authentication': {},
+                  'retry_timeout': 10, 'listen': '*:5433', 'parameters': parameters}
+        self.p.reload_config(config)
+        self.assertEqual(self.p.pending_restart, False)
+        mock_logger.assert_called_once_with('No PostgreSQL configuration items changed, nothing to reload.')
+        self.assertEqual(self.p.pending_restart, False)
+        self.assertEqual(self.p.pending_restart_reason, {})
+
+        mock_logger.reset_mock()
+
+        # Handle wal_buffers
         parameters['wal_buffers'] = '512'
-        config = {'pg_hba': [''], 'pg_ident': [''], 'use_unix_socket': True, 'use_unix_socket_repl': True,
-                  'authentication': {},
-                  'retry_timeout': 10, 'listen': '*', 'krbsrvname': 'postgres', 'parameters': parameters}
         self.p.reload_config(config)
-        parameters['b.ar'] = 'bar'
-        with patch.object(MockCursor, 'fetchall',
-                          Mock(side_effect=[[('wal_block_size', '8191', None, 'integer', 'internal'),
-                                             ('wal_segment_size', '2048', '8kB', 'integer', 'internal'),
-                                             ('shared_buffers', '16384', '8kB', 'integer', 'postmaster'),
-                                             ('wal_buffers', '-1', '8kB', 'integer', 'postmaster'),
-                                             ('port', '5433', None, 'integer', 'postmaster')], Exception])):
-            self.p.reload_config(config)
-        parameters['autovacuum'] = 'on'
+        mock_logger.assert_called_once_with('No PostgreSQL configuration items changed, nothing to reload.')
+        self.assertEqual(self.p.pending_restart, False)
+        self.assertEqual(self.p.pending_restart_reason, {})
+
+        mock_logger.reset_mock()
+
+        # hba/ident_changed
+        parameters = self._PARAMETERS.copy()
+        config = {'use_unix_socket': True, 'authentication': {},
+                  'pg_hba': [''], 'pg_ident': [''],
+                  'retry_timeout': 10, 'listen': '*:5433', 'parameters': parameters}
         self.p.reload_config(config)
+        mock_logger.assert_called_once_with('Reloading PostgreSQL configuration.')
+        self.assertEqual(self.p.pending_restart, False)
+        self.assertEqual(self.p.pending_restart_reason, {})
+
+        mock_logger.reset_mock()
+
+        # User-defined-parameter changed (removed)
+        parameters.pop('f.oo')
+        self.p.reload_config(config)
+        self.assertEqual(mock_logger.call_args_list[0][0], ("Changed %s from '%s' to '%s'", 'f.oo', 'bar', None))
+        self.assertEqual(mock_logger.call_args_list[1][0], ('Reloading PostgreSQL configuration.',))
+        self.assertEqual(self.p.pending_restart, False)
+        self.assertEqual(self.p.pending_restart_reason, {})
+
+        mock_logger.reset_mock()
+
+        # Non-internal and non-postmaster parameter change
         parameters['autovacuum'] = 'off'
-        parameters.pop('search_path')
-        config['listen'] = '*:5433'
         self.p.reload_config(config)
-        parameters['unix_socket_directories'] = '.'
-        self.p.reload_config(config)
-        self.p.config.resolve_connection_addresses()
+        self.assertEqual(mock_logger.call_args_list[0][0], ("Changed %s from '%s' to '%s'", 'autovacuum', 'on', 'off'))
+        self.assertEqual(mock_logger.call_args_list[1][0], ('Reloading PostgreSQL configuration.',))
+        self.assertEqual(self.p.pending_restart, False)
+        self.assertEqual(self.p.pending_restart_reason, {})
+
+        mock_logger.reset_mock()
+
+        pg_settings = [('port', '5433', None, 'integer', 'postmaster'),
+                       ('listen_addresses', '*', None, 'string', 'postmaster'),
+                       ('unix_socket_directories', '/tmp', None, 'string', 'postmaster')]
+        with patch('patroni.postgresql.config.logger.warning') as mock_warning, \
+             mock.patch('patroni.postgresql.Postgresql._query', Mock(side_effect=[
+                 pg_settings, [('max_wal_senders', 37)],  # external configuration change
+                 pg_settings, Exception]),):  # error while querying pending_restart params
+            parameters['unix_socket_directories'] = '.'
+            parameters['krbsrvname'] = 'postgres'
+            self.p.reload_config(config)
+            self.assertEqual(mock_logger.call_args_list[2][0], ("PostgreSQL configuration parameter requiring restart seems to be"
+                                                                " changed bypassing Patroni config. Setting 'Pending restart' flag",))
+            self.assertEqual(self.p.pending_restart, True)
+            self.assertEqual(self.p.pending_restart_reason, {'max_wal_senders': ('?', 37), 'unix_socket_directories': ('/tmp', '.')})
+
+            self.p.reload_config(config)
+            self.assertEqual(mock_warning.call_args_list[-1][0][0], 'Exception %r when running query')
 
     def test_resolve_connection_addresses(self):
         self.p.config._config['use_unix_socket'] = self.p.config._config['use_unix_socket_repl'] = True
