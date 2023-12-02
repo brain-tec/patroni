@@ -1569,8 +1569,8 @@ def output_members(cluster: Cluster, name: str, extended: bool = False,
 
             lag = member.get('lag', '')
 
-            def format_diff(param: str, values: Tuple[Any, Any]):
-                full_diff = param + ': ' + '->'.join(map(str, values))
+            def format_diff(param: str, values: Tuple[str, str]):
+                full_diff = param + ': ' + values[0] + '->' + values[1]
                 return full_diff if len(full_diff) <= 50 else param + ': [hidden - too long]'
             restart_reason = '\n'.join(
                 [format_diff(k,v) for k, v in member.get('pending_restart_reason', {}).items()]) or ''

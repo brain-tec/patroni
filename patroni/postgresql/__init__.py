@@ -77,7 +77,7 @@ class Postgresql(object):
         self.set_state('stopped')
 
         self._pending_restart = False
-        self._pending_restart_reason: Dict[str, Tuple[Any, Any]] = {}
+        self._pending_restart_reason: Dict[str, Tuple[str, str]] = {}
         self.connection_pool = ConnectionPool()
         self._connection = self.connection_pool.get('heartbeat')
         self.citus_handler = CitusHandler(self, config.get('citus'))
@@ -321,10 +321,10 @@ class Postgresql(object):
         return self._pending_restart
 
     @property
-    def pending_restart_reason(self) -> Dict[str, Tuple[Any, Any]]:
+    def pending_restart_reason(self) -> Dict[str, Tuple[str, str]]:
         return self._pending_restart_reason
 
-    def set_pending_restart(self, value: bool, diff_dict: Optional[Dict[str, Tuple[Any, Any]]] = None) -> None:
+    def set_pending_restart(self, value: bool, diff_dict: Optional[Dict[str, Tuple[str, str]]] = None) -> None:
         self._pending_restart = value
         if not value:
             self._pending_restart_reason = {}

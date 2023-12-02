@@ -1086,7 +1086,7 @@ class ConfigHandler(object):
         server_parameters = self.get_server_parameters(config)
 
         conf_changed = hba_changed = ident_changed = local_connection_address_changed = pending_restart = False
-        param_diff: Dict[str, Tuple[Any, Any]] = {}
+        param_diff: Dict[str, Tuple[str, str]] = {}
         if self._postgresql.state == 'running':
             changes = CaseInsensitiveDict({p: v for p, v in server_parameters.items()
                                            if p.lower() not in self._RECOVERY_PARAMETERS})
@@ -1111,7 +1111,7 @@ class ConfigHandler(object):
                             conf_changed = True
                             if r[4] == 'postmaster':
                                 pending_restart = True
-                                param_diff[r[0]] = (r[1], new_value)
+                                param_diff[r[0]] = (r[1], str(new_value))
                                 logger.info("Changed %s from '%s' to '%s'. Setting 'Pending restart' flag",
                                             r[0], r[1], new_value)
                                 if config.get('use_unix_socket') and r[0] == 'unix_socket_directories'\
@@ -1237,7 +1237,7 @@ class ConfigHandler(object):
                 effective_configuration[name] = cvalue
                 logger.info("%s value in pg_controldata: %d, in the global configuration: %d."
                             " pg_controldata value will be used. Setting 'Pending restart' flag", name, cvalue, value)
-                self._postgresql.set_pending_restart(True, {cname: (cvalue, value)})
+                self._postgresql.set_pending_restart(True, {cname: (str(cvalue), str(value))})
 
         # If we are using custom bootstrap with PITR it could fail when values like max_connections
         # are increased, therefore we disable hot_standby if recovery_target_action == 'promote'.
