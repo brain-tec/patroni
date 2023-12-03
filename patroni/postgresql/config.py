@@ -1175,8 +1175,9 @@ class ConfigHandler(object):
                     if len(new_diff) > 0:
                         pending_restart = True
                         param_diff.update(new_diff)
-                        logger.info("PostgreSQL configuration parameter requiring restart seems to be changed"
-                                    " bypassing Patroni config. Setting 'Pending restart' flag")
+                        logger.info("PostgreSQL configuration parameters requiring restart"
+                                    " (%s) seem to be changed bypassing Patroni config."
+                                    " Setting 'Pending restart' flag", ', '.join(new_diff.keys()))
                 except Exception as e:
                     logger.warning('Exception %r when running query', e)
         else:
