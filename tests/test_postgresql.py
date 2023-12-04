@@ -625,10 +625,12 @@ class TestPostgresql(BaseTestPostgresql):
             parameters['unix_socket_directories'] = '.'
             parameters['krbsrvname'] = 'postgres'
             self.p.reload_config(config)
-            self.assertEqual(mock_logger.call_args_list[2][0], ("PostgreSQL configuration parameter requiring restart seems to be"
-                                                                " changed bypassing Patroni config. Setting 'Pending restart' flag",))
+            self.assertEqual(mock_logger.call_args_list[2][0],
+                             ("PostgreSQL configuration parameters requiring restart (%s) seem to be"
+                              " changed bypassing Patroni config. Setting 'Pending restart' flag", 'max_wal_senders'))
             self.assertEqual(self.p.pending_restart, True)
-            self.assertEqual(self.p.pending_restart_reason, {'max_wal_senders': ('?', 37), 'unix_socket_directories': ('/tmp', '.')})
+            self.assertEqual(self.p.pending_restart_reason,
+                             {'max_wal_senders': ('?', 37), 'unix_socket_directories': ('/tmp', '.')})
 
             self.p.reload_config(config)
             self.assertEqual(mock_warning.call_args_list[-1][0][0], 'Exception %r when running query')
