@@ -12,6 +12,8 @@ from patroni.ctl import ctl, load_config, output_members, get_dcs, parse_dcs, \
     get_all_members, get_any_member, get_cursor, query_member, PatroniCtlException, apply_config_changes, \
     format_config_for_editing, show_diff, invoke_editor, format_pg_version, CONFIG_FILE_PATH, PatronictlPrettyTable
 from patroni.dcs import Cluster, Failover
+from patroni.postgresql.config import ParamDiff
+from patroni.postgresql.mpp import get_mpp
 from patroni.psycopg import OperationalError
 from patroni.utils import tzutc
 from prettytable import PrettyTable, ALL
@@ -69,7 +71,7 @@ class TestCtl(unittest.TestCase):
     @patch('patroni.psycopg.connect', psycopg_connect)
     def test_get_cursor(self):
         with click.Context(click.Command('query')) as ctx:
-            ctx.obj = {'__config': {}}
+            ctx.obj = {'__config': {}, '__mpp': get_mpp({})}
             for role in self.TEST_ROLES:
                 self.assertIsNone(get_cursor(get_cluster_initialized_without_leader(), None, {}, role=role))
                 self.assertIsNotNone(get_cursor(get_cluster_initialized_with_leader(), None, {}, role=role))
@@ -107,7 +109,7 @@ class TestCtl(unittest.TestCase):
 
     def test_output_members(self):
         with click.Context(click.Command('list')) as ctx:
-            ctx.obj = {'__config': {}}
+            ctx.obj = {'__config': {}, '__mpp': get_mpp({})}
             scheduled_at = datetime.now(tzutc) + timedelta(seconds=600)
             cluster = get_cluster_initialized_with_leader(Failover(1, 'foo', 'bar', scheduled_at))
             del cluster.members[1].data['conn_url']
@@ -157,7 +159,8 @@ class TestCtl(unittest.TestCase):
         # Target and source are equal
         result = self.runner.invoke(ctl, ['switchover', 'dummy', '--group', '0'], input='leader\nleader\n\ny')
         self.assertEqual(result.exit_code, 1)
-        self.assertIn('Switchover target and source are the same', result.output)
+        self.assertIn("Candidate ['other']", result.output)
+        self.assertIn('Member leader is already the leader of cluster dummy', result.output)
 
         # Candidate is not a member of the cluster
         result = self.runner.invoke(ctl, ['switchover', 'dummy', '--group', '0'], input='leader\nReality\n\ny')
@@ -220,29 +223,36 @@ class TestCtl(unittest.TestCase):
         result = self.runner.invoke(ctl, ['failover', 'dummy'], input='0\n')
         self.assertIn('Failover could be performed only to a specific candidate', result.output)
 
+        # Candidate is the same as the leader
+        result = self.runner.invoke(ctl, ['failover', 'dummy', '--group', '0'], input='leader\n')
+        self.assertIn("Candidate ['other']", result.output)
+        self.assertIn('Member leader is already the leader of cluster dummy', result.output)
+
         # Temp test to check a fallback to switchover if leader is specified
         with patch('patroni.ctl._do_failover_or_switchover') as failover_func_mock:
             result = self.runner.invoke(ctl, ['failover', '--leader', 'leader', 'dummy'], input='0\n')
             self.assertIn('Supplying a leader name using this command is deprecated', result.output)
             failover_func_mock.assert_called_once_with('switchover', 'dummy', None, 'leader', None, False)
 
-        # Failover to an async member in sync mode (confirm)
         cluster = get_cluster_initialized_with_leader(sync=('leader', 'other'))
         cluster.members.append(Member(0, 'async', 28, {'api_url': 'http://127.0.0.1:8012/patroni'}))
         cluster.config.data['synchronous_mode'] = True
         with patch('patroni.dcs.AbstractDCS.get_cluster', Mock(return_value=cluster)):
+            # Failover to an async member in sync mode (confirm)
             result = self.runner.invoke(ctl,
                                         ['failover', 'dummy', '--group', '0', '--candidate', 'async'], input='y\ny')
             self.assertIn('Are you sure you want to failover to the asynchronous node async', result.output)
+            self.assertEqual(result.exit_code, 0)
 
-        # Failover to an async member in sync mode (abort)
-        result = self.runner.invoke(ctl, ['failover', 'dummy', '--group', '0', '--candidate', 'async'], input='N')
-        self.assertEqual(result.exit_code, 1)
+            # Failover to an async member in sync mode (abort)
+            result = self.runner.invoke(ctl, ['failover', 'dummy', '--group', '0', '--candidate', 'async'], input='N')
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn('Aborting failover', result.output)
 
     @patch('patroni.dynamic_loader.iter_modules', Mock(return_value=['patroni.dcs.dummy', 'patroni.dcs.etcd']))
     def test_get_dcs(self):
         with click.Context(click.Command('list')) as ctx:
-            ctx.obj = {'__config': {'dummy': {}}}
+            ctx.obj = {'__config': {'dummy': {}}, '__mpp': get_mpp({})}
             self.assertRaises(PatroniCtlException, get_dcs, 'dummy', 0)
 
     @patch('patroni.psycopg.connect', psycopg_connect)
@@ -431,7 +441,7 @@ class TestCtl(unittest.TestCase):
 
     def test_get_any_member(self):
         with click.Context(click.Command('list')) as ctx:
-            ctx.obj = {'__config': {}}
+            ctx.obj = {'__config': {}, '__mpp': get_mpp({})}
             for role in self.TEST_ROLES:
                 self.assertIsNone(get_any_member(get_cluster_initialized_without_leader(), None, role=role))
 
@@ -440,7 +450,7 @@ class TestCtl(unittest.TestCase):
 
     def test_get_all_members(self):
         with click.Context(click.Command('list')) as ctx:
-            ctx.obj = {'__config': {}}
+            ctx.obj = {'__config': {}, '__mpp': get_mpp({})}
             for role in self.TEST_ROLES:
                 self.assertEqual(list(get_all_members(get_cluster_initialized_without_leader(), None, role=role)), [])
 
@@ -475,7 +485,7 @@ class TestCtl(unittest.TestCase):
 
         cluster = get_cluster_initialized_with_leader()
         cluster.members[1].data['pending_restart'] = True
-        cluster.members[1].data['pending_restart_reason'] = {'param': ('', 'very l' + 'o' * 34 + 'ng')}
+        cluster.members[1].data['pending_restart_reason'] = {'param': ParamDiff('', 'very l' + 'o' * 34 + 'ng')}
         with patch('patroni.dcs.AbstractDCS.get_cluster', Mock(return_value=cluster)):
             result = self.runner.invoke(ctl, ['list', 'dummy'])
             self.assertIn('param: [hidden - too long]', result.output)
@@ -483,7 +493,7 @@ class TestCtl(unittest.TestCase):
             result = self.runner.invoke(ctl, ['list', 'dummy', '-f', 'tsv'])
             self.assertIn('param: ->very l' + 'o' * 34 + 'ng', result.output)
 
-            cluster.members[1].data['pending_restart_reason'] = {'param': ('', 'new')}
+            cluster.members[1].data['pending_restart_reason'] = {'param': ParamDiff('', 'new')}
             result = self.runner.invoke(ctl, ['list', 'dummy'])
             self.assertIn('param: ->new', result.output)
 

@@ -19,8 +19,8 @@ from .callback_executor import CallbackAction, CallbackExecutor
 from .cancellable import CancellableSubprocess
 from .config import ConfigHandler, mtime
 from .connection import ConnectionPool, get_connection_cursor
-from .citus import CitusHandler
 from .misc import parse_history, parse_lsn, postgres_major_version_to_int
+from .mpp import AbstractMPP
 from .postmaster import PostmasterProcess
 from .slots import SlotsHandler
 from .sync import SyncHandler
@@ -35,6 +35,7 @@ from ..tags import Tags
 if TYPE_CHECKING:  # pragma: no cover
     from psycopg import Connection as Connection3, Cursor
     from psycopg2 import connection as connection3, cursor
+    from .config import ParamDiff
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class Postgresql(object):
               "pg_catalog.pg_{0}_{1}_diff(COALESCE(pg_catalog.pg_last_{0}_receive_{1}(), '0/0'), '0/0')::bigint, "
               "pg_catalog.pg_is_in_recovery() AND pg_catalog.pg_is_{0}_replay_paused()")
 
-    def __init__(self, config: Dict[str, Any]) -> None:
+    def __init__(self, config: Dict[str, Any], mpp: AbstractMPP) -> None:
         self.name: str = config['name']
         self.scope: str = config['scope']
         self._data_dir: str = config['data_dir']
@@ -77,11 +78,10 @@ class Postgresql(object):
         self._state_lock = Lock()
         self.set_state('stopped')
 
-        self._pending_restart = False
-        self._pending_restart_reason: Dict[str, Tuple[str, str]] = {}
+        self._pending_restart_reason: Dict[str, 'ParamDiff'] = {}
         self.connection_pool = ConnectionPool()
         self._connection = self.connection_pool.get('heartbeat')
-        self.citus_handler = CitusHandler(self, config.get('citus'))
+        self.citus_handler = mpp.get_handler_impl(self)
         self.config = ConfigHandler(self, config)
         self.config.check_directories()
 
@@ -322,19 +322,14 @@ class Postgresql(object):
         self._is_leader_retry.deadline = self.retry.deadline = config['retry_timeout'] / 2.0
 
     @property
-    def pending_restart(self) -> bool:
-        return self._pending_restart
-
-    @property
-    def pending_restart_reason(self) -> Dict[str, Tuple[str, str]]:
+    def pending_restart_reason(self) -> Dict[str, 'ParamDiff']:
         return self._pending_restart_reason
 
-    def set_pending_restart(self, value: bool, diff_dict: Optional[Dict[str, Tuple[str, str]]] = None) -> None:
-        self._pending_restart = value
-        if not value:
-            self._pending_restart_reason = {}
+    def set_pending_restart_reason(self, diff_dict: Dict[str, 'ParamDiff'], update: bool = False) -> None:
+        if update:
+            self._pending_restart_reason.update(diff_dict)
         else:
-            self._pending_restart_reason.update(diff_dict or {})
+            self._pending_restart_reason = diff_dict
 
     @property
     def sysid(self) -> str:
@@ -736,7 +731,7 @@ class Postgresql(object):
         self.set_role(role or self.get_postgres_role_from_data_directory())
 
         self.set_state('starting')
-        self.set_pending_restart(False)
+        self.set_pending_restart_reason({})
 
         try:
             if not self.ensure_major_version_is_known():

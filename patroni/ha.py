@@ -332,7 +332,7 @@ class Ha(object):
             if coordinator and coordinator.leader and coordinator.leader.conn_url:
                 try:
                     data = {'type': event,
-                            'group': self.state_handler.citus_handler.group(),
+                            'group': self.state_handler.citus_handler.group,
                             'leader': self.state_handler.name,
                             'timeout': self.dcs.ttl,
                             'cooldown': self.patroni.config['retry_timeout']}
@@ -361,7 +361,7 @@ class Ha(object):
             tags = self.get_effective_tags()
             if tags:
                 data['tags'] = tags
-            if self.state_handler.pending_restart:
+            if self.state_handler.pending_restart_reason:
                 data['pending_restart'] = True
                 data['pending_restart_reason'] = self.state_handler.pending_restart_reason
             if self._async_executor.scheduled_action in (None, 'promote') \
@@ -848,7 +848,7 @@ class Ha(object):
             self.state_handler.set_role('master')
             self.process_sync_replication()
             self.update_cluster_history()
-            self.state_handler.citus_handler.sync_pg_dist_node(self.cluster)
+            self.state_handler.citus_handler.sync_meta_data(self.cluster)
             return message
         elif self.state_handler.role in ('master', 'promoted', 'primary'):
             self.process_sync_replication()
@@ -1486,7 +1486,7 @@ class Ha(object):
         if postgres_version and postgres_version_to_int(postgres_version) <= int(self.state_handler.server_version):
             reason_to_cancel = "postgres version mismatch"
 
-        if pending_restart and not self.state_handler.pending_restart:
+        if pending_restart and not self.state_handler.pending_restart_reason:
             reason_to_cancel = "pending restart flag is not set"
 
         if not reason_to_cancel:
