@@ -156,7 +156,8 @@ class TestCtl(unittest.TestCase):
         # Target and source are equal
         result = self.runner.invoke(ctl, ['switchover', 'dummy', '--group', '0'], input='leader\nleader\n\ny')
         self.assertEqual(result.exit_code, 1)
-        self.assertIn('Switchover target and source are the same', result.output)
+        self.assertIn("Candidate ['other']", result.output)
+        self.assertIn('Member leader is already the leader of cluster dummy', result.output)
 
         # Candidate is not a member of the cluster
         result = self.runner.invoke(ctl, ['switchover', 'dummy', '--group', '0'], input='leader\nReality\n\ny')
@@ -223,7 +224,10 @@ class TestCtl(unittest.TestCase):
         result = self.runner.invoke(ctl, ['failover', 'dummy'], input='0\n')
         self.assertIn('Failover could be performed only to a specific candidate', result.output)
 
-        cluster = get_cluster_initialized_with_leader(sync=('leader', 'other'))
+        # Candidate is the same as the leader
+        result = self.runner.invoke(ctl, ['failover', 'dummy', '--group', '0'], input='leader\n')
+        self.assertIn("Candidate ['other']", result.output)
+        self.assertIn('Member leader is already the leader of cluster dummy', result.output)
 
         # Temp test to check a fallback to switchover if leader is specified
         with patch('patroni.ctl._do_failover_or_switchover') as failover_func_mock:
@@ -232,17 +236,20 @@ class TestCtl(unittest.TestCase):
             failover_func_mock.assert_called_once_with(
                 DEFAULT_CONFIG, 'switchover', 'dummy', None, 'leader', None, False)
 
-        # Failover to an async member in sync mode (confirm)
+        cluster = get_cluster_initialized_with_leader(sync=('leader', 'other'))
         cluster.members.append(Member(0, 'async', 28, {'api_url': 'http://127.0.0.1:8012/patroni'}))
         cluster.config.data['synchronous_mode'] = True
         mock_get_dcs.return_value.get_cluster = Mock(return_value=cluster)
-        result = self.runner.invoke(ctl, ['failover', 'dummy', '--group', '0', '--candidate', 'async'], input='y\ny')
+        # Failover to an async member in sync mode (confirm)
+        result = self.runner.invoke(ctl,
+                                    ['failover', 'dummy', '--group', '0', '--candidate', 'async'], input='y\ny')
         self.assertIn('Are you sure you want to failover to the asynchronous node async', result.output)
+        self.assertEqual(result.exit_code, 0)
 
         # Failover to an async member in sync mode (abort)
-        mock_get_dcs.return_value.get_cluster = Mock(return_value=cluster)
         result = self.runner.invoke(ctl, ['failover', 'dummy', '--group', '0', '--candidate', 'async'], input='N')
         self.assertEqual(result.exit_code, 1)
+        self.assertIn('Aborting failover', result.output)
 
     @patch('patroni.dcs.dcs_modules', Mock(return_value=['patroni.dcs.dummy', 'patroni.dcs.etcd']))
     def test_get_dcs(self):
