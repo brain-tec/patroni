@@ -55,10 +55,10 @@ GET_PG_SETTINGS_RESULT = [
     ('zero_damaged_pages', 'off', None, 'bool', 'superuser'),
     ('stats_temp_directory', '/tmp', None, 'string', 'sighup'),
     ('track_commit_timestamp', 'off', None, 'bool', 'postmaster'),
-    ('wal_log_hints', 'on', None, 'bool', 'superuser'),
-    ('hot_standby', 'on', None, 'bool', 'superuser'),
-    ('max_replication_slots', '5', None, 'integer', 'superuser'),
-    ('wal_level', 'logical', None, 'enum', 'superuser'),
+    ('wal_log_hints', 'on', None, 'bool', 'postmaster'),
+    ('hot_standby', 'on', None, 'bool', 'postmaster'),
+    ('max_replication_slots', '5', None, 'integer', 'postmaster'),
+    ('wal_level', 'logical', None, 'enum', 'postmaster'),
 ]
 
 
@@ -129,8 +129,6 @@ class MockCursor(object):
             sql = sql.decode('utf-8')
         if sql.startswith('blabla'):
             raise psycopg.ProgrammingError()
-        if sql.startswith('CREATE DATABASE'):
-            raise psycopg.DuplicateDatabase()
         elif sql == 'CHECKPOINT' or sql.startswith('SELECT pg_catalog.pg_create_'):
             raise psycopg.OperationalError()
         elif sql.startswith('RetryFailedError'):
