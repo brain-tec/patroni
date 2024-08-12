@@ -1222,6 +1222,9 @@ parameters:
   restart_after_crash:
   - type: Bool
     version_from: 90300
+  restrict_nonsystem_relation_kind:
+  - type: String
+    version_from: 120000
   row_security:
   - type: Bool
     version_from: 90500
