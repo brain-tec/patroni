@@ -1,18 +1,21 @@
-import etcd
-import urllib3.util.connection
 import socket
 import unittest
 
+from unittest.mock import Mock, patch, PropertyMock
+
+import etcd
+import urllib3.util.connection
+
 from dns.exception import DNSException
+from urllib3.exceptions import ReadTimeoutError
+
 from patroni.dcs import get_dcs
-from patroni.dcs.etcd import AbstractDCS, EtcdClient, Cluster, Etcd, EtcdError, DnsCachingResolver
+from patroni.dcs.etcd import AbstractDCS, Cluster, DnsCachingResolver, Etcd, EtcdClient, EtcdError
 from patroni.exceptions import DCSError
 from patroni.postgresql.mpp import get_mpp
 from patroni.utils import Retry
-from unittest.mock import Mock, PropertyMock, patch
-from urllib3.exceptions import ReadTimeoutError
 
-from . import SleepException, MockResponse, requests_get
+from . import MockResponse, requests_get, SleepException
 
 
 def etcd_watch(self, key, index=None, timeout=None, recursive=None):
@@ -345,7 +348,7 @@ class TestEtcd(unittest.TestCase):
         self.assertTrue(self.etcd.watch(None, 1))
 
     def test_sync_state(self):
-        self.assertIsNone(self.etcd.write_sync_state('leader', None))
+        self.assertIsNone(self.etcd.write_sync_state('leader', None, 0))
         self.assertFalse(self.etcd.delete_sync_state())
 
     def test_set_history_value(self):

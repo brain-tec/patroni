@@ -8,7 +8,7 @@ import sys
 import types
 
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
 from .collections import EMPTY_DICT
 from .utils import parse_bool, parse_int
@@ -106,9 +106,15 @@ class GlobalConfig(types.ModuleType):
         return self.check_mode('pause')
 
     @property
+    def is_quorum_commit_mode(self) -> bool:
+        """:returns: ``True`` if quorum commit replication is requested"""
+        return str(self.get('synchronous_mode')).lower() == 'quorum'
+
+    @property
     def is_synchronous_mode(self) -> bool:
         """``True`` if synchronous replication is requested and it is not a standby cluster config."""
-        return self.check_mode('synchronous_mode') and not self.is_standby_cluster
+        return (self.check_mode('synchronous_mode') is True or self.is_quorum_commit_mode) \
+            and not self.is_standby_cluster
 
     @property
     def is_synchronous_mode_strict(self) -> bool:

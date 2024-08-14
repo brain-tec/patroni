@@ -2,10 +2,12 @@ import logging
 import os
 import sys
 import unittest
-import yaml
+
 from io import StringIO
-from queue import Queue, Full
+from queue import Full, Queue
 from unittest.mock import Mock, patch
+
+import yaml
 
 from patroni.config import Config
 from patroni.log import PatroniLogger
@@ -38,6 +40,7 @@ class TestPatroniLogger(unittest.TestCase):
                 'traceback_level': 'DEBUG',
                 'max_queue_size': 5,
                 'dir': 'foo',
+                'mode': 0o600,
                 'file_size': 4096,
                 'file_num': 5,
                 'loggers': {
@@ -50,7 +53,9 @@ class TestPatroniLogger(unittest.TestCase):
         os.environ[Config.PATRONI_CONFIG_VARIABLE] = yaml.dump(config, default_flow_style=False)
         logger = PatroniLogger()
         patroni_config = Config(None)
-        logger.reload_config(patroni_config['log'])
+        with patch('os.chmod') as mock_chmod:
+            logger.reload_config(patroni_config['log'])
+            self.assertEqual(mock_chmod.call_args[0][1], 0o600)
         _LOG.exception('test')
         logger.start()
 
