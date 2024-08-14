@@ -1,14 +1,16 @@
 import os
-import unittest
 import tempfile
 import time
-from unittest.mock import Mock, PropertyMock, patch
+import unittest
+
+from unittest.mock import Mock, patch, PropertyMock
+
+from pysyncobj import FAIL_REASON, SyncObjConf
 
 from patroni.dcs import get_dcs
-from patroni.dcs.raft import Cluster, DynMemberSyncObj, KVStoreTTL, \
-    Raft, RaftError, SyncObjUtility, TCPTransport, _TCPTransport
+from patroni.dcs.raft import _TCPTransport, Cluster, DynMemberSyncObj, \
+    KVStoreTTL, Raft, RaftError, SyncObjUtility, TCPTransport
 from patroni.postgresql.mpp import get_mpp
-from pysyncobj import SyncObjConf, FAIL_REASON
 
 
 def remove_files(prefix):
@@ -140,8 +142,8 @@ class TestRaft(unittest.TestCase):
         self.assertTrue(raft.initialize())
         self.assertTrue(raft.cancel_initialization())
         self.assertTrue(raft.set_config_value('{}'))
-        self.assertTrue(raft.write_sync_state('foo', 'bar'))
-        self.assertFalse(raft.write_sync_state('foo', 'bar', 1))
+        self.assertTrue(raft.write_sync_state('foo', 'bar', 0))
+        self.assertFalse(raft.write_sync_state('foo', 'bar', 0, 1))
         raft._mpp = get_mpp({'citus': {'group': 1, 'database': 'postgres'}})
         self.assertTrue(raft.manual_failover('foo', 'bar'))
         raft._mpp = get_mpp({'citus': {'group': 0, 'database': 'postgres'}})

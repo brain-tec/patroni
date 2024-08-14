@@ -9,11 +9,19 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
+from threading import current_thread, Lock
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING, Union
+
 from dateutil import tz
 from psutil import TimeoutExpired
-from threading import current_thread, Lock
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union, Tuple, TYPE_CHECKING
 
+from .. import global_config, psycopg
+from ..async_executor import CriticalTask
+from ..collections import CaseInsensitiveDict, CaseInsensitiveSet, EMPTY_DICT
+from ..dcs import Cluster, Leader, Member
+from ..exceptions import PostgresConnectionException
+from ..tags import Tags
+from ..utils import data_directory_is_empty, parse_int, polling_loop, Retry, RetryFailedError
 from .bootstrap import Bootstrap
 from .callback_executor import CallbackAction, CallbackExecutor
 from .cancellable import CancellableSubprocess
@@ -24,13 +32,6 @@ from .mpp import AbstractMPP
 from .postmaster import PostmasterProcess
 from .slots import SlotsHandler
 from .sync import SyncHandler
-from .. import global_config, psycopg
-from ..async_executor import CriticalTask
-from ..collections import CaseInsensitiveSet, CaseInsensitiveDict, EMPTY_DICT
-from ..dcs import Cluster, Leader, Member
-from ..exceptions import PostgresConnectionException
-from ..utils import Retry, RetryFailedError, polling_loop, data_directory_is_empty, parse_int
-from ..tags import Tags
 
 if TYPE_CHECKING:  # pragma: no cover
     from psycopg import Connection as Connection3, Cursor
@@ -180,6 +181,11 @@ class Postgresql(object):
     @property
     def lsn_name(self) -> str:
         return 'lsn' if self._major_version >= 100000 else 'location'
+
+    @property
+    def supports_quorum_commit(self) -> bool:
+        """``True`` if quorum commit is supported by Postgres."""
+        return self._major_version >= 100000
 
     @property
     def supports_multiple_sync(self) -> bool:

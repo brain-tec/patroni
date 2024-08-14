@@ -21,13 +21,13 @@ import subprocess
 import sys
 import tempfile
 import time
-from shlex import split
-
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union, Tuple, Type, TYPE_CHECKING
 
 from collections import OrderedDict
-from dateutil import tz
 from json import JSONDecoder
+from shlex import split
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type, TYPE_CHECKING, Union
+
+from dateutil import tz
 from urllib3.response import HTTPResponse
 
 from .exceptions import PatroniException
@@ -922,7 +922,7 @@ def cluster_as_json(cluster: 'Cluster') -> Dict[str, Any]:
         * ``members``: list of members in the cluster. Each value is a :class:`dict` that may have the following keys:
 
             * ``name``: the name of the host (unique in the cluster). The ``members`` list is sorted by this key;
-            * ``role``: ``leader``, ``standby_leader``, ``sync_standby``, or ``replica``;
+            * ``role``: ``leader``, ``standby_leader``, ``sync_standby``, ``quorum_standby``, or ``replica``;
             * ``state``: ``stopping``, ``stopped``, ``stop failed``, ``crashed``, ``running``, ``starting``,
                 ``start failed``, ``restarting``, ``restart failed``, ``initializing new cluster``, ``initdb failed``,
                 ``running custom bootstrap script``, ``custom bootstrap failed``, or ``creating replica``;
@@ -949,11 +949,12 @@ def cluster_as_json(cluster: 'Cluster') -> Dict[str, Any]:
     cluster_lsn = cluster.status.last_lsn
 
     ret: Dict[str, Any] = {'members': []}
+    sync_role = 'quorum_standby' if config.is_quorum_commit_mode else 'sync_standby'
     for m in cluster.members:
         if m.name == leader_name:
             role = 'standby_leader' if config.is_standby_cluster else 'leader'
         elif config.is_synchronous_mode and cluster.sync.matches(m.name):
-            role = 'sync_standby'
+            role = sync_role
         else:
             role = 'replica'
 
