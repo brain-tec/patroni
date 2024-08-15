@@ -164,10 +164,7 @@ class PatroniRequest(object):
 
         :returns: the response returned upon request.
         """
-        url = member.api_url or ''
-        if endpoint:
-            scheme, netloc, _, _, _, _ = urlparse(url)
-            url = urlunparse((scheme, netloc, endpoint, '', '', ''))
+        url = member.get_endpoint_url(endpoint)
         return self.request(method, url, data, **kwargs)
 
 
