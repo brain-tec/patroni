@@ -4,8 +4,6 @@ import urllib3
 
 from typing import Any, Dict, Optional, Union
 
-from urllib.parse import urlparse, urlunparse
-
 from .config import Config
 from .dcs import Member
 from .utils import USER_AGENT

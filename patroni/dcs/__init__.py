@@ -1098,7 +1098,7 @@ class Cluster(NamedTuple('Cluster',
         return self.__permanent_slots if postgresql.can_advance_slots or role in ('master', 'primary') \
             else self.__permanent_logical_slots
 
-    def _get_members_slots(self, name: str, role: str) -> Dict[str, Dict[str, str]]:
+    def _get_members_slots(self, name: str, role: str) -> Dict[str, Dict[str, Any]]:
         """Get physical replication slots configuration for members that sourcing from this node.
 
         If the ``replicatefrom`` tag is set on the member - we should not create the replication slot for it on
