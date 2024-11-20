@@ -38,7 +38,14 @@ import dateutil.tz
 import urllib3
 import yaml
 
-from prettytable import ALL, FRAME, PrettyTable
+from prettytable import PrettyTable
+
+try:  # pragma: no cover
+    from prettytable import HRuleStyle
+    hrule_all = HRuleStyle.ALL
+    hrule_frame = HRuleStyle.FRAME
+except ImportError:  # pragma: no cover
+    from prettytable import ALL as hrule_all, FRAME as hrule_frame
 
 if TYPE_CHECKING:  # pragma: no cover
     from psycopg import Cursor
@@ -437,7 +444,7 @@ def print_output(columns: Optional[List[str]], rows: List[List[Any]], alignment:
         else:
             # If any value is multi-line, then add horizontal between all table rows while printing to get a clear
             # visual separation of rows.
-            hrules = ALL if any(any(isinstance(c, str) and '\n' in c for c in r) for r in rows) else FRAME
+            hrules = hrule_all if any(any(isinstance(c, str) and '\n' in c for c in r) for r in rows) else hrule_frame
             table = PatronictlPrettyTable(header, columns, hrules=hrules)
             table.align = 'l'
             for k, v in (alignment or {}).items():
@@ -1889,12 +1896,13 @@ def show_diff(before_editing: str, after_editing: str) -> None:
     unified_diff = difflib.unified_diff(listify(before_editing), listify(after_editing))
 
     if sys.stdout.isatty():
-        buf = io.StringIO()
+        buf = io.BytesIO()
         for line in unified_diff:
-            buf.write(str(line))
+            buf.write(line.encode('utf-8'))
         buf.seek(0)
 
         class opts:
+            theme = 'default'
             side_by_side = False
             width = 80
             tab_width = 8
