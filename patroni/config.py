@@ -148,6 +148,7 @@ class Config(object):
         if validator:  # patronictl uses validator=None
             self._load_cache()  # we don't want to load anything from local cache for ctl
             self._validate_failover_tags()  # irrelevant for ctl
+            self._validate_sync_tags()
         self._cache_needs_saving = False
 
     @property
@@ -360,6 +361,7 @@ class Config(object):
                     self._local_configuration = configuration
                     self.__effective_configuration = new_configuration
                     self._validate_failover_tags()
+                    self._validate_sync_tags()
                     return True
                 else:
                     logger.info('No local configuration items changed.')
@@ -820,3 +822,15 @@ class Config(object):
                      or bool(nofailover_tag) is False and failover_priority_tag <= 0):
             logger.warning('Conflicting configuration between nofailover: %s and failover_priority: %s. '
                            'Defaulting to nofailover: %s', nofailover_tag, failover_priority_tag, nofailover_tag)
+
+    def _validate_sync_tags(self) -> None:
+        tags = self.get('tags', {})
+        if 'nosync' not in tags:
+            return
+        nosync_tag = tags.get('nosync')
+        sync_priority_tag = parse_int(tags.get('sync_priority'))
+        if sync_priority_tag is not None \
+                and (bool(nosync_tag) is True and sync_priority_tag > 0
+                     or bool(nosync_tag) is False and sync_priority_tag <= 0):
+            logger.warning('Conflicting configuration between nosync: %s and sync_priority: %s. '
+                           'Defaulting to nosync: %s', nosync_tag, sync_priority_tag, nosync_tag)
