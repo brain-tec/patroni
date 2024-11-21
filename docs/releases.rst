@@ -3,6 +3,40 @@
 Release notes
 =============
 
+Version 4.0.4
+-------------
+
+Released 2024-11-22
+
+**Stability improvements**
+
+- Add compatibility with the ``py-consul`` module (Alexander Kukushkin)
+
+  ``python-consul`` module is unmaintained for a long time, while ``py-consul`` is the official replacement. Backward compatibility with python-consul is retained.
+
+- Add compatibility with the ``prettytable>=3.12.0`` module (Alexander Kukushkin)
+
+  Get rid of deprecation warnings.
+
+- Compatibility with the ``ydiff==1.4.2`` module (Alexander Kukushkin)
+
+  Fix compatibility issues for the latest version, constrain version in ``requirements.txt`` and introduce latest version compatibility test.
+
+**Bugfixes**
+
+- Run ``on_role_change`` callback after a failed primary recovery (Polina Bungina, Alexander Kukushkin)
+
+  Additionally run ``on_role_change`` callback for a primary that failed to start after a crash to increase chances the callback is executed, even if the further start as a replica fails.
+
+- Fix a thread leak in ``patronictl list -W`` (Alexander Kukushkin)
+
+  Cache DCS instance object to avoid thread leak.
+
+- Ensure only supported parameters are written to the connection string (Alexander Kukushkin)
+
+  Patroni used to pass parameters introduced in newer versions to the connection string, which had been leading to connection errors.
+
+
 Version 4.0.3
 -------------
 
@@ -12,7 +46,7 @@ Released 2024-10-18
 
 - Disable ``pgaudit`` when creating users not to expose password (kviset)
 
-  Patroni was logging ``superuser``, ``replication``, and ``rewind`` passwords on their creation when ``pgaudit`` extension was enabled.
+  Patroni was logging ``superuser``, ``replication`ƒ`, and ``rewind`` passwords on their creation when ``pgaudit`` extension was enabled.
 
 - Fix issue with mixed setups: primary on pre-Patroni v4 and replicas on v4+ (Alexander Kukushkin)
 
