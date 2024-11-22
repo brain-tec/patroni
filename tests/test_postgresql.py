@@ -274,7 +274,7 @@ class TestPostgresql(BaseTestPostgresql):
             self.assertEqual(self.p.checkpoint({'user': 'postgres'}), 'is_in_recovery=true')
         with patch.object(MockCursor, 'execute', Mock(return_value=None)):
             self.assertIsNone(self.p.checkpoint())
-        self.assertEqual(self.p.checkpoint(timeout=10), 'not accessible or not healty')
+        self.assertEqual(self.p.checkpoint(timeout=10), 'not accessible or not healthy')
 
     @patch('patroni.postgresql.config.mtime', mock_mtime)
     @patch('patroni.postgresql.config.ConfigHandler._get_pg_settings')
@@ -1182,3 +1182,26 @@ class TestPostgresql2(BaseTestPostgresql):
         self.assertEqual(dict(self.p.config._recovery_params),
                          {'primary_conninfo': {'host': 'a', 'port': '5433', 'passfile': '/blabla', 'sslmode': 'prefer',
                           'gssencmode': 'prefer', 'channel_binding': 'prefer', 'sslnegotiation': 'postgres'}})
+
+    def test_format_dsn(self):
+        params = {'host': '1', 'port': 2, 'target_session_attrs': 'read-write', 'gssencmode': 'prefer',
+                  'channel_binding': 'prefer', 'sslpassword': 'pwd', 'sslcrldir': '/', 'sslnegotiation': 'postgres'}
+        self.p._major_version = 90600
+        self.assertEqual(self.p.config.format_dsn(params), 'host=1 port=2')
+        self.p._major_version = 100000
+        self.assertEqual(self.p.config.format_dsn(params), 'host=1 port=2 target_session_attrs=read-write')
+        self.p._major_version = 120000
+        self.assertEqual(self.p.config.format_dsn(params),
+                         'host=1 port=2 gssencmode=prefer target_session_attrs=read-write')
+        self.p._major_version = 130000
+        self.assertEqual(self.p.config.format_dsn(params),
+                         'host=1 port=2 sslpassword=pwd gssencmode=prefer '
+                         'channel_binding=prefer target_session_attrs=read-write')
+        self.p._major_version = 140000
+        self.assertEqual(self.p.config.format_dsn(params),
+                         'host=1 port=2 sslpassword=pwd sslcrldir=/ gssencmode=prefer '
+                         'channel_binding=prefer target_session_attrs=read-write')
+        self.p._major_version = 170000
+        self.assertEqual(self.p.config.format_dsn(params),
+                         'host=1 port=2 sslpassword=pwd sslcrldir=/ gssencmode=prefer channel_binding=prefer '
+                         'target_session_attrs=read-write sslnegotiation=postgres')

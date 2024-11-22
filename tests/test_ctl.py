@@ -14,7 +14,14 @@ from patroni.postgresql.config import get_param_diff
 from patroni.postgresql.mpp import get_mpp
 from patroni.psycopg import OperationalError
 from patroni.utils import tzutc
-from prettytable import PrettyTable, ALL
+
+from prettytable import PrettyTable
+try:
+    from prettytable import HRuleStyle
+    hrule_all = HRuleStyle.ALL
+except ImportError:
+    from prettytable import ALL as hrule_all
+
 from unittest import mock
 from unittest.mock import patch, Mock, PropertyMock
 from urllib3 import PoolManager
@@ -252,8 +259,8 @@ class TestCtl(unittest.TestCase):
     @patch('patroni.dynamic_loader.iter_modules', Mock(return_value=['patroni.dcs.dummy', 'patroni.dcs.etcd']))
     def test_get_dcs(self):
         with click.Context(click.Command('list')) as ctx:
-            ctx.obj = {'__config': {'dummy': {}}, '__mpp': get_mpp({})}
-            self.assertRaises(PatroniCtlException, get_dcs, 'dummy', 0)
+            ctx.obj = {'__config': {'dummy2': {}}, '__mpp': get_mpp({})}
+            self.assertRaises(PatroniCtlException, get_dcs, 'dummy2', 0)
 
     @patch('patroni.psycopg.connect', psycopg_connect)
     @patch('patroni.ctl.query_member', Mock(return_value=([['mock column']], None)))
@@ -685,6 +692,17 @@ class TestCtl(unittest.TestCase):
         show_diff(b"foo:\n  bar: \xc3\xb6\xc3\xb6\n".decode('utf-8'),
                   b"foo:\n  bar: \xc3\xbc\xc3\xbc\n".decode('utf-8'))
 
+    @patch('subprocess.Popen')
+    @patch('os.environ.get', Mock(return_value='cat'))
+    @patch('sys.stdout.isatty', Mock(return_value=True))
+    @patch('shutil.which', Mock(return_value='cat'))
+    def test_show_diff_pager(self, mock_popen):
+        show_diff("foo:\n  bar: 1\n", "foo:\n  bar: 2\n")
+        self.assertEqual(mock_popen.return_value.stdin.write.call_count, 6)
+        self.assertIn(b' bar: ', mock_popen.return_value.stdin.write.call_args_list[5][0][0])
+        self.assertIn(b' bar: ', mock_popen.return_value.stdin.write.call_args_list[4][0][0])
+        self.assertIn(b' foo:', mock_popen.return_value.stdin.write.call_args_list[3][0][0])
+
     @patch('subprocess.call', return_value=1)
     def test_invoke_editor(self, mock_subprocess_call):
         os.environ.pop('EDITOR', None)
@@ -750,7 +768,7 @@ class TestCtl(unittest.TestCase):
 class TestPatronictlPrettyTable(unittest.TestCase):
 
     def setUp(self):
-        self.pt = PatronictlPrettyTable(' header', ['foo', 'bar'], hrules=ALL)
+        self.pt = PatronictlPrettyTable(' header', ['foo', 'bar'], hrules=hrule_all)
 
     def test__get_hline(self):
         expected = '+-----+-----+'
