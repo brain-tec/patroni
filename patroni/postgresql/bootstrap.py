@@ -115,6 +115,7 @@ class Bootstrap(object):
 
     def _initdb(self, config: Any) -> bool:
         self._postgresql.set_state('initializing new cluster')
+        time.sleep(15)
         not_allowed_options = ('pgdata', 'nosync', 'pwfile', 'sync-only', 'version')
 
         def error_handler(e: str) -> None:
