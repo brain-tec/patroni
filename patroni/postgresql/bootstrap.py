@@ -350,6 +350,8 @@ class Bootstrap(object):
         for bbfailures in range(0, maxfailures):
             if self._postgresql.cancellable.is_cancelled:
                 break
+            if not self._postgresql.data_directory_empty():
+                self._postgresql.remove_data_directory()
             try:
                 logger.debug('calling: %r', cmd)
                 ret = self._postgresql.cancellable.call(cmd, env=env)
