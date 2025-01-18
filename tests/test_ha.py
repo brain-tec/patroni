@@ -15,6 +15,7 @@ from patroni.exceptions import DCSError, PatroniFatalException, PostgresConnecti
 from patroni.ha import _MemberStatus, Ha
 from patroni.postgresql import Postgresql
 from patroni.postgresql.bootstrap import Bootstrap
+from patroni.postgresql.callback_executor import CallbackAction
 from patroni.postgresql.cancellable import CancellableSubprocess
 from patroni.postgresql.config import ConfigHandler
 from patroni.postgresql.postmaster import PostmasterProcess
@@ -98,12 +99,13 @@ def get_cluster_initialized_with_leader_and_failsafe():
 
 def get_node_status(reachable=True, in_recovery=True, dcs_last_seen=0,
                     timeline=2, wal_position=10, nofailover=False,
-                    watchdog_failed=False, failover_priority=1):
+                    watchdog_failed=False, failover_priority=1, sync_priority=1):
     def fetch_node_status(e):
         tags = {}
         if nofailover:
             tags['nofailover'] = True
         tags['failover_priority'] = failover_priority
+        tags['sync_priority'] = sync_priority
         return _MemberStatus(e, reachable, in_recovery, wal_position,
                              {'tags': tags, 'watchdog_failed': watchdog_failed,
                               'dcs_last_seen': dcs_last_seen, 'timeline': timeline})
@@ -155,6 +157,7 @@ zookeeper:
         self.watchdog = Watchdog(self.config)
         self.request = lambda *args, **kwargs: requests_get(args[0].api_url, *args[1:], **kwargs)
         self.failover_priority = 1
+        self.sync_priority = 1
 
 
 def run_async(self, func, args=()):
@@ -1105,11 +1108,14 @@ class TestHa(PostgresInit):
     @patch.object(Rewind, 'check_leader_is_not_in_recovery', true)
     @patch('os.listdir', Mock(return_value=[]))
     @patch('patroni.postgresql.rewind.fsync_dir', Mock())
-    def test_post_recover(self):
+    @patch.object(Postgresql, 'call_nowait')
+    def test_post_recover(self, mock_call_nowait):
         self.p.is_running = false
         self.ha.has_lock = true
         self.p.set_role('primary')
         self.assertEqual(self.ha.post_recover(), 'removed leader key after trying and failing to start postgres')
+        self.assertEqual(self.p.role, 'demoted')
+        mock_call_nowait.assert_called_once_with(CallbackAction.ON_ROLE_CHANGE)
         self.ha.has_lock = false
         self.assertEqual(self.ha.post_recover(), 'failed to start postgres')
         leader = Leader(0, 0, Member(0, 'l', 2, {"version": "1.6", "conn_url": "postgres://a", "role": "primary"}))
@@ -1568,7 +1574,7 @@ class TestHa(PostgresInit):
 
     def test_effective_tags(self):
         self.ha._disable_sync = True
-        self.assertEqual(self.ha.get_effective_tags(), {'foo': 'bar', 'nosync': True})
+        self.assertEqual(self.ha.get_effective_tags(), {'foo': 'bar', 'nosync': True, 'sync_priority': 0})
         self.ha._disable_sync = False
         self.assertEqual(self.ha.get_effective_tags(), {'foo': 'bar'})
 
@@ -1583,7 +1589,7 @@ class TestHa(PostgresInit):
         self.ha.cluster = get_cluster_initialized_with_leader()
         self.ha.watch(0)
 
-    def test_wakup(self):
+    def test_wakeup(self):
         self.ha.wakeup()
 
     def test_shutdown(self):

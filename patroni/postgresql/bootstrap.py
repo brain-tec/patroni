@@ -318,6 +318,10 @@ class Bootstrap(object):
                     logger.exception('Error creating replica using method %s', replica_method)
                     ret = 1
 
+                # replica creation method failed, clean up data directory if configuration allows
+                if not method_config.get('keep_data', False) and not self._postgresql.data_directory_empty():
+                    self._postgresql.remove_data_directory()
+
         self._postgresql.set_state('stopped')
         return ret
 
@@ -359,6 +363,9 @@ class Bootstrap(object):
             if bbfailures < maxfailures - 1:
                 logger.warning('Trying again in 5 seconds')
                 time.sleep(5)
+            elif not self._postgresql.data_directory_empty():
+                # pg_basebackup failed, clean up data directory
+                self._postgresql.remove_data_directory()
 
         return ret
 
@@ -447,7 +454,7 @@ END;$$""".format(f, quote_ident(rewind['username'], postgresql.connection()))
 
                 if config.get('users'):
                     logger.error('User creation is not be supported starting from v4.0.0. '
-                                 'Please use "boostrap.post_bootstrap" script to create users.')
+                                 'Please use "bootstrap.post_bootstrap" script to create users.')
 
                 # We were doing a custom bootstrap instead of running initdb, therefore we opened trust
                 # access from certain addresses to be able to reach cluster and change password

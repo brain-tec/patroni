@@ -439,7 +439,7 @@ class Or(object):
 
 
 class AtMostOne(object):
-    """Mark that at most one option from a :class:`Case` can be suplied.
+    """Mark that at most one option from a :class:`Case` can be supplied.
 
     Represents a list of possible configuration options in a given scope, where at most one can actually
     be provided.
@@ -1182,7 +1182,10 @@ schema = Schema({
         Optional("clonefrom"): bool,
         Optional("noloadbalance"): bool,
         Optional("replicatefrom"): str,
-        Optional("nosync"): bool,
+        AtMostOne("nosync", "sync_priority"): Case({
+            "nosync": bool,
+            "sync_priority": IntValidator(min=0, expected_type=int, raise_assert=True),
+        }),
         Optional("nostream"): bool
     }
 })

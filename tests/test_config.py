@@ -158,42 +158,78 @@ class TestConfig(unittest.TestCase):
     def test_invalid_path(self):
         self.assertRaises(ConfigParseError, Config, 'postgres0')
 
+    @patch('os.path.exists', Mock(return_value=True))
+    @patch('os.path.isfile', Mock(side_effect=lambda fname: fname != 'postgres0'))
+    @patch('os.path.isdir', Mock(return_value=True))
+    @patch('os.listdir', Mock(return_value=['00-empty.yml', '00-base.yml']))
+    @patch('patroni.config.logger')
+    def test_invalid_empty_config_file(self, mock_logger):
+        def open_mock(fname, *args, **kwargs):
+            if fname.endswith('00-base.yml'):
+                return io.StringIO(
+                    u'''
+                    test: True
+                    test2:
+                      child-1: somestring
+                      child-2: 5
+                      child-3: False
+                    test3: True
+                    test4:
+                     - abc: 3
+                     - abc: 4
+                    ''')
+            elif fname.endswith('00-empty.yml'):
+                return io.StringIO(u'''---''')
+
+        with patch('builtins.open', MagicMock(side_effect=open_mock)):
+            self.assertRaises(ConfigParseError, Config, 'postgres0')
+            mock_logger.error.assert_called_once_with(
+                '%s does not contain a dict',
+                'postgres0\\00-empty.yml' if sys.platform == 'win32' else 'postgres0/00-empty.yml')
+
     @patch.object(Config, 'get')
     @patch('patroni.config.logger')
-    def test__validate_failover_tags(self, mock_logger, mock_get):
-        """Ensures that only one of `nofailover` or `failover_priority` can be provided"""
-        # Providing one of `nofailover` or `failover_priority` is fine
-        for single_param in ({"nofailover": True}, {"failover_priority": 1}, {"failover_priority": 0}):
-            mock_get.side_effect = [single_param] * 2
-            self.assertIsNone(self.config._validate_failover_tags())
-            mock_logger.warning.assert_not_called()
+    def test__validate_tags(self, mock_logger, mock_get):
+        """Ensures that only one of `nofailover`/`nosync' or `failover_priority`/`sync_priority` can be provided"""
+        tag_setup = (('nofailover', 'failover_priority'),
+                     ('nosync', 'sync_priority',))
 
-        # Providing both `nofailover` and `failover_priority` is fine if consistent
-        for consistent_state in (
-            {"nofailover": False, "failover_priority": 1},
-            {"nofailover": True, "failover_priority": 0},
-            {"nofailover": "False", "failover_priority": 0}
-        ):
-            mock_get.side_effect = [consistent_state] * 2
-            self.assertIsNone(self.config._validate_failover_tags())
-            mock_logger.warning.assert_not_called()
+        for tag, priority_tag in tag_setup:
+            # Providing one tag is fine
+            for single_param in ({tag: True}, {priority_tag: 1}, {priority_tag: 0}):
+                mock_get.side_effect = [single_param] * 2
+                self.assertIsNone(self.config._validate_contradictory_tags())
+                mock_logger.warning.assert_not_called()
 
-        # Providing both inconsistently should log a warning
-        for inconsistent_state in (
-            {"nofailover": False, "failover_priority": 0},
-            {"nofailover": True, "failover_priority": 1},
-            {"nofailover": "False", "failover_priority": 1},
-            {"nofailover": "", "failover_priority": 0}
-        ):
-            mock_get.side_effect = [inconsistent_state] * 2
-            self.assertIsNone(self.config._validate_failover_tags())
-            mock_logger.warning.assert_called_once_with(
-                'Conflicting configuration between nofailover: %s and failover_priority: %s.'
-                + ' Defaulting to nofailover: %s',
-                inconsistent_state['nofailover'],
-                inconsistent_state['failover_priority'],
-                inconsistent_state['nofailover'])
-            mock_logger.warning.reset_mock()
+            # Providing both tags is fine if consistent
+            for consistent_state in (
+                {tag: False, priority_tag: 1},
+                {tag: True, priority_tag: 0},
+                {tag: "False", priority_tag: 0}
+            ):
+                mock_get.side_effect = [consistent_state] * 2
+                self.assertIsNone(self.config._validate_contradictory_tags())
+                mock_logger.warning.assert_not_called()
+
+            # Providing both inconsistently should log a warning
+            for inconsistent_state in (
+                {tag: False, priority_tag: 0},
+                {tag: True, priority_tag: 1},
+                {tag: "False", priority_tag: 1},
+                {tag: "", priority_tag: 0}
+            ):
+                mock_get.side_effect = [inconsistent_state] * 2
+                self.assertIsNone(self.config._validate_contradictory_tags())
+                mock_logger.warning.assert_called_once_with(
+                    'Conflicting configuration between %s: %s and %s: %s.'
+                    + ' Defaulting to %s: %s',
+                    tag,
+                    inconsistent_state[tag],
+                    priority_tag,
+                    inconsistent_state[priority_tag],
+                    tag,
+                    inconsistent_state[tag])
+                mock_logger.warning.reset_mock()
 
     def test__process_postgresql_parameters(self):
         expected_params = {

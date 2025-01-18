@@ -410,6 +410,7 @@ class Ha(object):
         # _disable_sync could be modified concurrently, but we don't care as attribute get and set are atomic.
         if self._disable_sync > 0:
             tags['nosync'] = True
+            tags['sync_priority'] = 0
         return tags
 
     def notify_mpp_coordinator(self, event: str) -> None:
@@ -608,7 +609,7 @@ class Ha(object):
             - postgres was running as ``replica`` wasn't ``shut down in recovery`` (cleanly)
               and we need to run ``pg_rewind`` to join back to the cluster.
 
-          - ``pg_rewind`` is executed if it is necessary, or optinally, the data directory could
+          - ``pg_rewind`` is executed if it is necessary, or optionally, the data directory could
              be removed if it is allowed by configuration.
 
           - after ``crash recovery`` and/or ``pg_rewind`` are executed, postgres is started in recovery.
@@ -1225,7 +1226,7 @@ class Ha(object):
 
         members = [RemoteMember(name, {'api_url': url})
                    for name, url in failsafe.items() if name != self.state_handler.name]
-        if not members:  # A sinlge node cluster
+        if not members:  # A single node cluster
             return True
         pool = ThreadPool(len(members))
         call_failsafe_member = functools.partial(self.call_failsafe_member, data)
@@ -1964,6 +1965,7 @@ class Ha(object):
             if self.has_lock():
                 if self.state_handler.role in ('primary', 'standby_leader'):
                     self.state_handler.set_role('demoted')
+                    self.state_handler.call_nowait(CallbackAction.ON_ROLE_CHANGE)
                 self._delete_leader()
                 return 'removed leader key after trying and failing to start postgres'
             return 'failed to start postgres'
@@ -2296,6 +2298,7 @@ class Ha(object):
                 return 'Unexpected exception raised, please report it as a BUG'
 
     def shutdown(self) -> None:
+        self._async_executor.cancel()
         if self.is_paused():
             logger.info('Leader key is not deleted and Postgresql is not stopped due paused state')
             self.watchdog.disable()
@@ -2388,7 +2391,7 @@ class Ha(object):
 
         :param exclude_failover_candidate: if ``True``, exclude :attr:`failover.candidate` from the candidates.
 
-        :returns: a list of :class:`Member` ojects or an empty list if there is no candidate available.
+        :returns: a list of :class:`Member` objects or an empty list if there is no candidate available.
         """
         failover = self.cluster.failover
         exclude = [self.state_handler.name] + ([failover.candidate] if failover and exclude_failover_candidate else [])

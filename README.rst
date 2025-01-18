@@ -33,7 +33,7 @@ For additional background info, see:
 
 * `Elephants on Automatic: HA Clustered PostgreSQL with Helm <https://www.youtube.com/watch?v=CftcVhFMGSY>`_, talk by Josh Berkus and Oleksii Kliukin at KubeCon Berlin 2017
 * `PostgreSQL HA with Kubernetes and Patroni <https://www.youtube.com/watch?v=iruaCgeG7qs>`__, talk by Josh Berkus at KubeCon 2016 (video)
-* `Feb. 2016 Zalando Tech blog post <https://tech.zalando.de/blog/zalandos-patroni-a-template-for-high-availability-postgresql/>`__
+* `Feb. 2016 Zalando Tech blog post <https://engineering.zalando.com/posts/2016/02/zalandos-patroni-a-template-for-high-availability-postgresql.html>`__
 
 ==================
 Development Status
@@ -91,7 +91,7 @@ where dependencies can be either empty, or consist of one or more of the followi
 etcd or etcd3
     `python-etcd` module in order to use Etcd as DCS
 consul
-    `python-consul` module in order to use Consul as DCS
+    `py-consul` module in order to use Consul as DCS
 zookeeper
     `kazoo` module in order to use Zookeeper as DCS
 exhibitor
