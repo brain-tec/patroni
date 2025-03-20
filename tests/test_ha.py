@@ -18,6 +18,7 @@ from patroni.postgresql.bootstrap import Bootstrap
 from patroni.postgresql.callback_executor import CallbackAction
 from patroni.postgresql.cancellable import CancellableSubprocess
 from patroni.postgresql.config import ConfigHandler
+from patroni.postgresql.misc import PostgresqlState
 from patroni.postgresql.postmaster import PostmasterProcess
 from patroni.postgresql.rewind import Rewind
 from patroni.postgresql.slots import SlotsHandler
@@ -211,7 +212,7 @@ class TestHa(PostgresInit):
     @patch.object(Config, '_load_cache', Mock())
     def setUp(self):
         super(TestHa, self).setUp()
-        self.p.set_state('running')
+        self.p.set_state(PostgresqlState.RUNNING)
         self.p.set_role('replica')
         self.p.postmaster_start_time = MagicMock(return_value=str(postmaster_start_time))
         self.p.can_create_replica_without_replication_connection = MagicMock(return_value=False)
@@ -678,7 +679,7 @@ class TestHa(PostgresInit):
         self.p.restart = Mock(return_value=None)
         self.assertEqual(self.ha.restart({}), (False, 'postgres is still starting'))
         self.p.restart = false
-        self.assertEqual(self.ha.restart({}), (False, 'restart failed'))
+        self.assertEqual(self.ha.restart({}), (False, PostgresqlState.RESTART_FAILED))
         self.ha.cluster = get_cluster_initialized_with_leader()
         self.ha._async_executor.schedule('reinitialize')
         self.assertEqual(self.ha.restart({}), (False, 'reinitialize already in progress'))
@@ -1076,6 +1077,9 @@ class TestHa(PostgresInit):
         # if there is a higher-priority node but it has a lower WAL position then this node should race
         self.ha.fetch_node_status = get_node_status(failover_priority=6, wal_position=9)
         self.assertTrue(self.ha._is_healthiest_node(self.ha.old_cluster.members))
+        # if the old leader is a higher-priority node on the same WAL position then this node should race
+        self.ha.fetch_node_status = get_node_status(failover_priority=6)
+        self.assertTrue(self.ha._is_healthiest_node(self.ha.old_cluster.members, leader=self.ha.old_cluster.leader))
         self.ha.fetch_node_status = get_node_status(wal_position=11)  # accessible, in_recovery, wal position ahead
         self.assertFalse(self.ha._is_healthiest_node(self.ha.old_cluster.members))
         # in synchronous_mode consider itself healthy if the former leader is accessible in read-only and ahead of us
