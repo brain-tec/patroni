@@ -16,6 +16,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+SYNC_STRICT_PLACEHOLDER = '__patroni_strict_sync_replica_placeholder__'
 SYNC_STANDBY_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z_0-9\$]*$')
 SYNC_REP_PARSER_RE = re.compile(r"""
            (?P<first> [fF][iI][rR][sS][tT] )
@@ -90,6 +91,9 @@ def parse_sync_standby_names(value: str) -> _SSN:
     >>> parse_sync_standby_names('ANY 4("a",*,b)').num
     4
 
+    >>> parse_sync_standby_names('ANY 1(__patroni_strict_sync_replica_placeholder__)').members == set()
+    True
+
     >>> parse_sync_standby_names('1')  # doctest: +IGNORE_EXCEPTION_DETAIL
     Traceback (most recent call last):
         ...
@@ -158,6 +162,8 @@ def parse_sync_standby_names(value: str) -> _SSN:
         else:
             raise ValueError("Unparsable synchronous_standby_names value %r: Unexpected token %s %r at %d" %
                              (value, a_type, a_value, a_pos))
+    if members == CaseInsensitiveSet([SYNC_STRICT_PLACEHOLDER]):
+        members = CaseInsensitiveSet()
     return _SSN(sync_type, has_star, num, members)
 
 
@@ -375,7 +381,7 @@ END;$$""")
         return _SyncState(
             self._ssn_data.sync_type,
             self._ssn_data.num,
-            CaseInsensitiveSet() if self._ssn_data.has_star else self._ssn_data.members,
+            CaseInsensitiveSet([SYNC_STRICT_PLACEHOLDER]) if self._ssn_data.has_star else self._ssn_data.members,
             sync_confirmed,
             active)
 
@@ -389,10 +395,10 @@ END;$$""")
         :param num: specifies number of nodes to sync to. The *num* is set only in case if quorum commit is enabled
         """
         # Special case. If sync nodes set is empty but requested num of sync nodes >= 1
-        # we want to set synchronous_standby_names to '*'
-        has_asterisk = '*' in sync or num and num >= 1 and not sync
-        if has_asterisk:
-            sync = ['*']
+        # we want to set synchronous_standby_names to '__patroni_strict_sync_replica_placeholder__'
+        sync_strict = '*' in sync or num and num >= 1 and not sync
+        if sync_strict:
+            sync = [SYNC_STRICT_PLACEHOLDER]
         else:
             sync = [quote_standby_name(x) for x in sorted(sync)]
 
@@ -412,7 +418,7 @@ END;$$""")
 
         if not (self._postgresql.config.set_synchronous_standby_names(sync_param)
                 and self._postgresql.state == PostgresqlState.RUNNING
-                and self._postgresql.is_primary()) or has_asterisk:
+                and self._postgresql.is_primary()) or sync_strict:
             return
 
         time.sleep(0.1)  # Usually it takes 1ms to reload postgresql.conf, but we will give it 100ms
