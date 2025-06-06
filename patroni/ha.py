@@ -797,7 +797,7 @@ class Ha(object):
                 logger.info("Enabled synchronous replication")
 
             current = CaseInsensitiveSet(sync.members)
-            picked, allow_promote = self.state_handler.sync_handler.current_state(self.cluster)
+            picked, allow_promote, num, ssn = self.state_handler.sync_handler.current_state(self.cluster)
 
             if picked == current and current != allow_promote:
                 logger.warning('Inconsistent state between synchronous_standby_names = %s and /sync = %s key '
@@ -807,7 +807,7 @@ class Ha(object):
                     return logger.warning("Updating sync state failed")
                 current = CaseInsensitiveSet(sync.members)
 
-            if picked != current:
+            if picked != current or current != ssn or len(current) != num:
                 # update synchronous standby list in dcs temporarily to point to common nodes in current and picked
                 sync_common = current & allow_promote
                 if sync_common != current:
@@ -829,7 +829,7 @@ class Ha(object):
                 if picked and picked != CaseInsensitiveSet('*') and allow_promote != picked:
                     # Wait for PostgreSQL to enable synchronous mode and see if we can immediately set sync_standby
                     time.sleep(2)
-                    _, allow_promote = self.state_handler.sync_handler.current_state(self.cluster)
+                    _, allow_promote, _, _ = self.state_handler.sync_handler.current_state(self.cluster)
                 if allow_promote and allow_promote != sync_common:
                     if not self.dcs.write_sync_state(self.state_handler.name, allow_promote, version=sync.version):
                         return logger.info("Synchronous replication key updated by someone else")
@@ -967,6 +967,7 @@ class Ha(object):
                 self._failsafe.set_is_active(0)
 
                 def before_promote():
+                    self._rewind.reset_state()  # make sure we will trigger checkpoint after promote
                     self.notify_mpp_coordinator('before_promote')
 
                 with self._async_response:
@@ -2070,10 +2071,7 @@ class Ha(object):
                     self._sync_replication_slots(True)
                     return 'continue to run as a leader because failsafe mode is enabled and all members are accessible'
                 self._failsafe.set_is_active(0)
-                msg = 'demoting self because DCS is not accessible and I was a leader'
-                if not self._async_executor.try_run_async(msg, self.demote, ('offline',)):
-                    return msg
-                logger.warning('AsyncExecutor is busy, demoting from the main thread')
+                logger.info('demoting self because DCS is not accessible and I was a leader')
                 self.demote('offline')
                 return 'demoted self because DCS is not accessible and I was a leader'
             else:
