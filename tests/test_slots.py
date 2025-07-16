@@ -220,8 +220,8 @@ class TestSlotsHandler(BaseTestPostgresql):
     @patch.object(Postgresql, 'is_primary', Mock(return_value=False))
     def test__ensure_logical_slots_replica(self):
         self.p.set_role('replica')
-
         self.cluster.status.slots['ls'] = 800
+
         with patch.object(SlotsHandler, 'check_logical_slots_readiness', Mock(return_value=False)):
             self.assertEqual(self.s.sync_replication_slots(self.cluster, self.tags), [])
 
