@@ -13,7 +13,7 @@ env:
 
 jobs:
   unit:
-    runs-on: ${{ fromJson('{"ubuntu":"ubuntu-22.04","windows":"windows-latest","macos":"macos-latest"}')[matrix.os] }}
+    runs-on: ${{ fromJson('{"ubuntu":"ubuntu-22.04","windows":"windows-latest","macos":"macos-15"}')[matrix.os] }}
     strategy:
       fail-fast: false
       matrix:
@@ -94,18 +94,13 @@ jobs:
     - name: Combine coverage
       run: python .github/workflows/run_tests.py combine
 
-    - name: Install coveralls
-      run: python -m pip install coveralls
-
-    - name: Upload Coverage
-      env:
-        COVERALLS_FLAG_NAME: unit-${{ matrix.os }}
-        COVERALLS_PARALLEL: 'true'
-        GITHUB_TOKEN: ${{ secrets.github_token }}
-      run: python -m coveralls --service=github
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        flags: unit-${{ matrix.os }}
 
   behave:
-    runs-on: ${{ fromJson('{"ubuntu":"ubuntu-22.04","windows":"windows-latest","macos":"macos-latest"}')[matrix.os] }}
+    runs-on: ${{ fromJson('{"ubuntu":"ubuntu-22.04","windows":"windows-latest","macos":"macos-14"}')[matrix.os] }}
     env:
       DCS: ${{ matrix.dcs }}
       ETCDVERSION: 3.4.23
@@ -164,17 +159,6 @@ jobs:
       run: bash <(curl -Ls https://coverage.codacy.com/get.sh) report -r cobertura.xml -l Python --partial
       if: ${{ env.SECRETS_AVAILABLE == 'true' }}
 
-  coveralls-finish:
-    name: Finalize coveralls.io
-    needs: unit
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/setup-python@v5
-    - run: python -m pip install coveralls
-    - run: python -m coveralls --service=github --finish
-      env:
-        GITHUB_TOKEN: ${{ secrets.github_token }}
-
   codacy-final:
     name: Finalize Codacy
     needs: behave
@@ -198,7 +182,7 @@ jobs:
 
     - uses: jakebailey/pyright-action@v2
       with:
-        version: 1.1.401
+        version: 1.1.405
 
   ydiff:
     name: Test compatibility with the latest version of ydiff
