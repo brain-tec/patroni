@@ -141,6 +141,8 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     - uses: nolar/setup-k3d-k3s@v1
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
       if: matrix.dcs == 'kubernetes'
     - name: Add postgresql and citus apt repo
       run: |
