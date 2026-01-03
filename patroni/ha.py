@@ -256,7 +256,7 @@ class Ha(object):
         # and trigger pg_rewind state machine.
         self._last_timeline = None
 
-        # receive/flush/replay LSN from last cycle, is be used to detect false positives of dead primary
+        # receive/flush/replay LSN from last cycle, is used to detect false positives of dead primary
         self._prev_wal_lsn: Optional[int] = None
         # timestamp when primary_race_backoff was triggered
         self._primary_race_backoff_timestamp = 0
@@ -1522,6 +1522,9 @@ class Ha(object):
             if ret is not None:  # continue if we just deleted the stale failover key as a leader
                 return ret
 
+        if self.state_handler.is_starting():  # postgresql still starting up is unhealthy
+            return False
+
         if self.state_handler.is_primary():
             if self.is_paused():
                 # in pause leader is the healthiest only when no initialize or sysid matches with initialize!
@@ -1792,8 +1795,11 @@ class Ha(object):
             if self._primary_race_backoff_timestamp == 0:
                 self._primary_race_backoff_timestamp = time.time()
             time_left = self._primary_race_backoff_timestamp + global_config.primary_race_backoff - time.time()
+            # We want to protect from leader key expiring shortly after the last heartbeat loop, and therefore
+            # also postpone leader race whe time_left is greater than primary_race_backoff - loop_wait.
             if time_left > 0 and self.state_handler.replication_state() == 'streaming' and \
-                    self.state_handler.last_operation() > self._prev_wal_lsn:
+                    self.state_handler.last_operation() > self._prev_wal_lsn or \
+                    time_left > global_config.primary_race_backoff - self.dcs.loop_wait:
                 return 'My ({0}) wal position moved since last heart beat loop, {1:.0f} seconds until leader race'\
                     .format(self.state_handler.name, time_left)
 
@@ -1825,9 +1831,11 @@ class Ha(object):
                 return self.follow('demoted self after trying and failing to obtain lock',
                                    'following new leader after trying and failing to obtain lock')
         else:
-            # when we are doing manual failover there is no guaranty that new leader is ahead of any other node
-            # node tagged as nofailover can be ahead of the new leader either, but it is always excluded from elections
-            if bool(self.cluster.failover) or self.patroni.nofailover:
+            # When we are doing manual failover there is no guaranty that new leader is ahead of any other node.
+            # Node tagged as nofailover can be also ahead of the new leader, but it is always excluded from elections
+            # and therefore we trigger rewind checks on it, but only if not in pause, because there is no race in pause.
+            if self.cluster.failover and self.cluster.failover.candidate or \
+                    self.patroni.nofailover and not self.is_paused():
                 self._rewind.trigger_check_diverged_lsn()
                 time.sleep(2)  # Give a time to somebody to take the leader lock
 
