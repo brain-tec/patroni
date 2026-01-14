@@ -12,3 +12,16 @@ class PatroniThreadPoolExecutor(ThreadPoolExecutor):
         barrier = Barrier(max_workers + 1)
         [self.submit(lambda: barrier.wait()) for _ in range(max_workers)]
         barrier.wait()
+
+
+__executor: PatroniThreadPoolExecutor
+
+
+def configure_global_pool(max_workers: int) -> None:
+    global __executor
+    __executor = PatroniThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='Global Pool')
+
+
+def get_executor() -> ThreadPoolExecutor:
+    global __executor
+    return __executor
