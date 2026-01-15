@@ -10,7 +10,7 @@ import os
 import signal
 import sys
 
-from threading import Lock
+from threading import Lock, stack_size
 from typing import Any, Optional, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -184,6 +184,17 @@ def abstract_main(cls: Type[AbstractPatroniDaemon], configfile: str) -> None:
         config = Config(configfile)
     except ConfigParseError as e:
         sys.exit(e.value)
+
+    try:
+        thread_stack_size = min(65536, int(config.get('thread_stack_size', 262144)))
+    except Exception as e:
+        logger.warning('Failed parse thread_stack_size=%s: %r', config.get('thread_stack_size'), e)
+        thread_stack_size = 262144
+        logger.info('Using default value thread_stack_size=%s', thread_stack_size)
+    try:
+        stack_size(thread_stack_size)
+    except Exception as e:
+        logger.warning('Failed to set threading.stack_size(%s): %r', thread_stack_size, e)
 
     controller = cls(config)
     try:
