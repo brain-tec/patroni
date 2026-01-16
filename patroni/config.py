@@ -492,6 +492,13 @@ class Config(object):
             if value:
                 ret[param] = value
 
+        for param in ('thread_pool_size', 'thread_stack_size'):
+            value = _popenv(param)
+            if value:
+                value = parse_int(value)
+                if value is not None and (param != 'thread_stack_size' or value % 4096 == 0):
+                    ret[param] = value
+
         def _fix_log_env(name: str, oldname: str) -> None:
             """Normalize a log related environment variable.
 
@@ -559,7 +566,7 @@ class Config(object):
                 if value is not None:
                     ret[first][second] = value
 
-        for first, params in (('restapi', ('request_queue_size',)),
+        for first, params in (('restapi', ('request_queue_size', 'thread_pool_size')),
                               ('log', ('max_queue_size', 'file_size', 'file_num', 'mode'))):
             for second in params:
                 value = ret.get(first, {}).pop(second, None)

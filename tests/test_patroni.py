@@ -12,6 +12,7 @@ import etcd
 
 import patroni.config as config
 
+from patroni.config import Config
 from patroni.__main__ import check_psycopg, main as _main, Patroni
 from patroni.api import RestApiServer
 from patroni.async_executor import AsyncExecutor
@@ -119,13 +120,22 @@ class TestPatroni(unittest.TestCase):
 
     @patch('sys.argv', ['patroni.py', 'postgres0.yml'])
     @patch('time.sleep', Mock(side_effect=SleepException))
+    @patch('patroni.daemon.stack_size', Mock(side_effect=Exception))
     @patch.object(etcd.Client, 'delete', Mock())
     @patch.object(AbstractEtcdClientWithFailover, '_get_machines_list', Mock(return_value=['http://remotehost:2379']))
     @patch.object(Thread, 'join', Mock())
     @patch.object(Postgresql, '_get_gucs', Mock(return_value={'foo': True, 'bar': True}))
     def test_patroni_patroni_main(self):
         with patch('subprocess.call', Mock(return_value=1)):
-            with patch.object(Patroni, 'run', Mock(side_effect=SleepException)):
+            orig_get = Config.get
+
+            def config_get(self, key, default=None):
+                if key in ('thread_stack_size', 'thread_pool_size'):
+                    return 'a'
+                return orig_get(self, key, default)
+
+            with patch.object(Patroni, 'run', Mock(side_effect=SleepException)),\
+                    patch.object(Config, 'get', config_get):
                 os.environ['PATRONI_POSTGRESQL_DATA_DIR'] = 'data/test0'
                 self.assertRaises(SleepException, _main)
             with patch.object(Patroni, 'run', Mock(side_effect=KeyboardInterrupt())):
