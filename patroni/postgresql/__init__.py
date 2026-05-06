@@ -11,7 +11,7 @@ from copy import deepcopy
 from datetime import datetime
 from enum import IntEnum
 from threading import current_thread, Lock
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, TYPE_CHECKING, Union
 
 from dateutil import tz
 from psutil import TimeoutExpired
@@ -426,6 +426,18 @@ class Postgresql(object):
             return self.retry(self._query, sql, *params)
         except RetryFailedError as exc:
             raise PostgresConnectionException(str(exc)) from exc
+
+    def was_restored_from_backup(self) -> bool:
+        """Check whether the data directory was restored from a base backup.
+
+        The presence of a ``backup_label`` file in the data directory indicates that PostgreSQL has not yet
+        completed recovery from a base backup. It is checked only for PostgreSQL 15+, because earlier versions
+        supported exclusive backups which could leave a stale ``backup_label`` behind after a primary crash.
+
+        :returns: ``True`` if running on PostgreSQL 15 or newer and the ``backup_label`` file exists in the
+            data directory, ``False`` otherwise.
+        """
+        return self._major_version >= 150000 and os.path.isfile(os.path.join(self._data_dir, 'backup_label'))
 
     def pg_control_exists(self) -> bool:
         return os.path.isfile(self._pg_control)
@@ -1093,7 +1105,7 @@ class Postgresql(object):
 
     @contextmanager
     def get_replication_connection_cursor(self, host: Optional[str] = None, port: Union[int, str] = 5432,
-                                          **kwargs: Any) -> Iterator[Union['cursor', 'Cursor[Any]']]:
+                                          **kwargs: Any) -> Generator[Union['cursor', 'Cursor[Any]'], None, None]:
         conn_kwargs = self.config.replication.copy()
         conn_kwargs.update(host=host, port=int(port) if port else None, user=conn_kwargs.pop('username'),
                            connect_timeout=3, replication=1, options='-c statement_timeout=2000')
