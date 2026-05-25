@@ -1889,8 +1889,7 @@ class TestHa(PostgresInit):
         self.p.set_role(PostgresqlRole.REPLICA)
         # Postgres 9.5, with synchronous_mode_strict, our name is written to leader of the /sync key.
         # Old leader name is written to the /sync key and synchronous_standby_names.
-        with patch.object(global_config.__class__, 'is_synchronous_mode_strict', PropertyMock(return_value=True)), \
-                patch.object(Postgresql, 'synchronous_standby_names', Mock(return_value='othe')):
+        with patch.object(global_config.__class__, 'is_synchronous_mode_strict', PropertyMock(return_value=True)):
             self.assertEqual(self.ha.run_cycle(), 'promoted self to leader by acquiring session lock')
         self.assertEqual(self.ha.dcs.write_sync_state.call_count, 1)
         self.assertEqual(mock_write_sync.call_args_list[0][0], (self.p.name, CaseInsensitiveSet(['other']), 0))
@@ -2037,7 +2036,7 @@ class TestHa(PostgresInit):
 
         # Test that _process_quorum_replication doesn't take longer than loop_wait
         with patch.object(Postgresql, 'synchronous_standby_names', Mock(return_value='ANY 1 (foo)')), \
-                patch('time.time', Mock(side_effect=[30, 60, 90, 120])):
+                patch('time.time', Mock(side_effect=[30, 60, 90, 120, 150])):
             self.ha.process_sync_replication()
 
         # Test foo -> ANY 1 (foo) transition
