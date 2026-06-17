@@ -91,7 +91,7 @@ class GlobalConfig(types.ModuleType):
         return self.__config.get(name)
 
     @property
-    def sync_cross_site_mode(self) -> 'SyncCrossSiteMode':
+    def sync_cross_site_mode(self) -> SyncCrossSiteMode:
         try:
             val = SyncCrossSiteMode((self.get('synchronous_cross_site') or 'off').lower().replace('-', '_'))
         except ValueError:
