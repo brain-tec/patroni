@@ -453,9 +453,11 @@ class Ha(object):
                 'api_url': self.patroni.api.connection_string,
                 'state': self.state_handler.state,
                 'role': self.state_handler.role,
-                'version': self.patroni.version,
-                'site': self.patroni.site
+                'version': self.patroni.version
             }
+            site = self.patroni.site
+            if site:
+                data['site'] = site
 
             proxy_url = self.state_handler.proxy_url
             if proxy_url:
@@ -840,8 +842,7 @@ class Ha(object):
         """
         sync = self.cluster.sync
         if sync.is_empty:
-            sync = self.dcs.write_sync_state(self.state_handler.name, None, 0,
-                                             global_config.sync_cross_site_mode, version=sync.version)
+            sync = self.dcs.write_sync_state(self.state_handler.name, None, 0, version=sync.version)
             if sync:
                 logger.info("Enabled synchronous replication")
             else:
@@ -896,8 +897,7 @@ class Ha(object):
                 self.state_handler.sync_handler.set_synchronous_standby_names(voters, numsync)
             elif current_cross_site_mode != dcs_state.cross_site_mode and \
                     current_cross_site_mode in (SyncCrossSiteMode.LOCAL_ONLY, SyncCrossSiteMode.REMOTE_ONLY):
-                self.dcs.write_sync_state(dcs_state.leader, CaseInsensitiveSet(), quorum,
-                                          current_cross_site_mode, version=dcs_state.version)
+                self.dcs.write_sync_state(dcs_state.leader, CaseInsensitiveSet(), quorum, version=dcs_state.version)
                 self.state_handler.sync_handler.set_synchronous_standby_names(CaseInsensitiveSet(), numsync)
                 site_msg = 'that satisfy current synchronous_cross_site configuration '
             elif voters:
@@ -963,8 +963,7 @@ class Ha(object):
 
                 if transition == 'quorum':
                     logger.info("Setting leader to %s, quorum to %d of (%s)", leader, num, ", ".join(sorted(nodes)))
-                    sync = self.dcs.write_sync_state(leader, nodes, num,
-                                                     global_config.sync_cross_site_mode, version=sync.version)
+                    sync = self.dcs.write_sync_state(leader, nodes, num, version=sync.version)
                     if not sync:
                         return logger.info('Synchronous replication key updated by someone else.')
                 elif transition == 'sync':
@@ -1003,8 +1002,7 @@ class Ha(object):
         if self.state_handler.name != sync.leader:
             logger.warning("Inconsistent state of /sync key detected, leader = %s doesn't match %s, "
                            "updating synchronous replication key", sync.leader, self.state_handler.name)
-            sync = self.dcs.write_sync_state(self.state_handler.name, None, 0,
-                                             global_config.sync_cross_site_mode, version=sync.version)
+            sync = self.dcs.write_sync_state(self.state_handler.name, None, 0, version=sync.version)
             if not sync:
                 return logger.warning("Updating sync state failed")
             voters = CaseInsensitiveSet()
@@ -1012,8 +1010,7 @@ class Ha(object):
         if picked == voters and voters != allow_promote:
             logger.warning('Inconsistent state between synchronous_standby_names = %s and /sync = %s key '
                            'detected, updating synchronous replication key...', list(allow_promote), list(voters))
-            sync = self.dcs.write_sync_state(self.state_handler.name, allow_promote, 0,
-                                             global_config.sync_cross_site_mode, version=sync.version)
+            sync = self.dcs.write_sync_state(self.state_handler.name, allow_promote, 0, version=sync.version)
             if not sync:
                 return logger.warning("Updating sync state failed")
             voters = CaseInsensitiveSet(sync.voters)
@@ -1031,8 +1028,7 @@ class Ha(object):
         sync_common = voters & allow_promote
         if sync_common != voters:
             logger.info("Updating /sync key temporarily from %s to %s", list(voters), list(sync_common))
-            sync = self.dcs.write_sync_state(self.state_handler.name, sync_common, 0,
-                                             global_config.sync_cross_site_mode, version=sync.version)
+            sync = self.dcs.write_sync_state(self.state_handler.name, sync_common, 0, version=sync.version)
             if not sync:
                 return logger.info('Synchronous replication key updated by someone else.')
 
@@ -1045,8 +1041,7 @@ class Ha(object):
             allow_promote = self.state_handler.sync_handler.current_state(self.cluster).sync_confirmed
 
         if allow_promote and allow_promote != sync_common:
-            if self.dcs.write_sync_state(self.state_handler.name, allow_promote, 0,
-                                         global_config.sync_cross_site_mode, version=sync.version):
+            if self.dcs.write_sync_state(self.state_handler.name, allow_promote, 0, version=sync.version):
                 logger.info("Synchronous standby status assigned to %s", list(allow_promote))
             else:
                 logger.info("Synchronous replication key updated by someone else")
@@ -1085,8 +1080,7 @@ class Ha(object):
 
         numsync = global_config.min_synchronous_nodes if global_config.min_synchronous_nodes > 0 and not sync else None
 
-        if not self.dcs.write_sync_state(self.state_handler.name, sync, 0,
-                                         global_config.sync_cross_site_mode, version=self.cluster.sync.version):
+        if not self.dcs.write_sync_state(self.state_handler.name, sync, 0, version=self.cluster.sync.version):
             return False
 
         self.state_handler.sync_handler.set_synchronous_standby_names(sync, numsync)
@@ -1458,9 +1452,9 @@ class Ha(object):
                         quorum_votes += 1
                 eligible_members.append(st)
 
-        current_site_eligible = [st for st in eligible_members
-                                 if st.data.get('patroni', {}).get('site') == current_site or not current_site]
         if current_site:
+            current_site_eligible = [st for st in eligible_members
+                                     if st.data.get('patroni', {}).get('site') == current_site]
             if current_site_eligible and self.patroni.site != current_site:
                 logger.info('Local failover in the current site %s is possible, while my site is %s',
                             current_site, self.patroni.site)

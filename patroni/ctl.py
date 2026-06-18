@@ -1688,9 +1688,9 @@ def output_members(cluster: Cluster, name: str, extended: bool = False,
         title_details = '' if group is None else f' (group: {group}, {initialize})'
     else:
         title = 'Cluster'
-        title_details = f' ({initialize})'
+        title_details = f" ({initialize}){len(cluster_sites) == 1 and ' Site: ' + list(cluster_sites)[0] or ''}"
 
-    title = f" {title}: {name}{title_details}{len(cluster_sites) == 1 and ' Site: ' + list(cluster_sites)[0] or ''} "
+    title = f' {title}: {name}{title_details} '
     if fmt in ('pretty', 'topology'):
         columns[columns.index('Replay Lag')] = columns[columns.index('Receive Lag')] = 'Lag'
     print_output(columns, rows,

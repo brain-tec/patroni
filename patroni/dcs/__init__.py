@@ -597,7 +597,7 @@ class SyncState(NamedTuple):
     leader: Optional[str]
     sync_standby: Optional[str]
     quorum: int
-    cross_site_mode: 'SyncCrossSiteMode'
+    cross_site_mode: Optional[SyncCrossSiteMode]
 
     @staticmethod
     def from_node(version: Optional[_Version], value: Union[str, Dict[str, Any], None]) -> 'SyncState':
@@ -649,7 +649,7 @@ class SyncState(NamedTuple):
 
         :returns: empty synchronisation state object.
         """
-        return SyncState(version, None, None, 0, SyncCrossSiteMode.OFF)
+        return SyncState(version, None, None, 0, None)
 
     @property
     def is_empty(self) -> bool:
@@ -2123,7 +2123,7 @@ class AbstractDCS(abc.ABC):
 
     @staticmethod
     def sync_state(leader: Optional[str], sync_standby: Optional[Collection[str]],
-                   quorum: Optional[int], cross_site_mode: 'SyncCrossSiteMode') -> Dict[str, Any]:
+                   quorum: Optional[int], cross_site_mode: Optional[SyncCrossSiteMode]) -> Dict[str, Any]:
         """Build ``sync_state`` dictionary.
 
         :param leader: name of the leader node that manages ``/sync`` key.
@@ -2136,11 +2136,10 @@ class AbstractDCS(abc.ABC):
         """
         return {'leader': leader, 'quorum': quorum,
                 'sync_standby': ','.join(sorted(sync_standby)) if sync_standby else None,
-                'cross_site_mode': cross_site_mode.value}
+                'cross_site_mode': cross_site_mode and cross_site_mode.value}
 
     def write_sync_state(self, leader: Optional[str], sync_standby: Optional[Collection[str]],
-                         quorum: Optional[int], cross_site_mode: 'SyncCrossSiteMode',
-                         version: Optional[Any] = None) -> Optional[SyncState]:
+                         quorum: Optional[int], version: Optional[Any] = None) -> Optional[SyncState]:
         """Write the new synchronous state to DCS.
 
         Calls :meth:`~AbstractDCS.sync_state` to build a dictionary and then calls DCS specific
@@ -2155,7 +2154,7 @@ class AbstractDCS(abc.ABC):
 
         :returns: the new :class:`SyncState` object or ``None``.
         """
-        sync_value = self.sync_state(leader, sync_standby, quorum, cross_site_mode)
+        sync_value = self.sync_state(leader, sync_standby, quorum, global_config.sync_cross_site_mode)
         ret = self.set_sync_state_value(json.dumps(sync_value, separators=(',', ':')), version)
         if not isinstance(ret, bool):
             return SyncState.from_node(ret, sync_value)
