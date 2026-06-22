@@ -50,7 +50,7 @@ WHITESPACE_RE = re.compile(r'[ \t\n\r]*', re.VERBOSE | re.MULTILINE | re.DOTALL)
 
 
 class SyncCrossSiteMode(str, Enum):
-    OFF = 'off'
+    ANY = 'any'
     BALANCED = 'balanced'
     LOCAL_ONLY = 'local_only'
     REMOTE_ONLY = 'remote_only'

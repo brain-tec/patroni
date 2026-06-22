@@ -72,7 +72,7 @@ def get_cluster_initialized_without_leader(leader=False, failover=None, sync=Non
                                  'scheduled_restart': {'schedule': "2100-01-01 10:53:07.560445+00:00",
                                                        'postgres_version': '99.0.0'}})
     syncstate = SyncState(0 if sync else None, sync and sync[0],
-                          sync and sync[1], sync[2] if sync and len(sync) > 2 else 0, SyncCrossSiteMode.OFF)
+                          sync and sync[1], sync[2] if sync and len(sync) > 2 else 0, SyncCrossSiteMode.ANY)
     failsafe = {m.name: m.api_url for m in (m1, m2)} if failsafe else None
     return get_cluster(SYSID, leader, [m1, m2], failover, syncstate, cluster_config, failsafe)
 
@@ -1982,7 +1982,7 @@ class TestHa(PostgresInit):
         self.assertEqual(mock_set_sync.call_count, 0)
 
         mock_write_sync = self.ha.dcs.write_sync_state = Mock(side_effect=[SyncState(None, self.p.name, None, 0,
-                                                                                     SyncCrossSiteMode.OFF), None])
+                                                                                     SyncCrossSiteMode.ANY), None])
         # Test /sync key is attempted to set and succeed when missing or invalid
         with patch.object(SyncState, 'is_empty', Mock(side_effect=[True, False])):
             self.ha.run_cycle()
@@ -2000,7 +2000,7 @@ class TestHa(PostgresInit):
                                                                          CaseInsensitiveSet(['foo']),
                                                                          CaseInsensitiveSet(['foo']))])
         mock_write_sync = self.ha.dcs.write_sync_state = Mock(return_value=SyncState(1, 'leader', 'foo',
-                                                                                     0, SyncCrossSiteMode.OFF))
+                                                                                     0, SyncCrossSiteMode.ANY))
         self.ha.cluster = get_cluster_initialized_with_leader(sync=('leader', 'foo'))
         # Test the sync node is removed from voters, added to ssn
         with patch.object(Postgresql, 'synchronous_standby_names', Mock(return_value='other')), \
