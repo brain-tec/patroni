@@ -105,7 +105,7 @@ class Postgresql(object):
         self.__thread_ident = current_thread().ident
 
         self.slots_handler = SlotsHandler(self)
-        self.sync_handler = SyncHandler(self)
+        self.sync_handler = SyncHandler(self, config.get('site'))
 
         self._callback_executor = CallbackExecutor()
         self.__cb_called = False

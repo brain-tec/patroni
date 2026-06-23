@@ -297,13 +297,14 @@ class SyncHandler(object):
     and the `current_state()` method will count newly added names as "sync" only when
     they reached memorized LSN and also reported as "sync" by `pg_stat_replication`"""
 
-    def __init__(self, postgresql: 'Postgresql') -> None:
+    def __init__(self, postgresql: 'Postgresql', site: Optional[str]) -> None:
         self._postgresql = postgresql
         self._synchronous_standby_names = ''  # last known value of synchronous_standby_names
         self._ssn_data = deepcopy(_EMPTY_SSN)
         self._primary_flush_lsn = 0
         # "sync" replication connections, that were verified to reach self._primary_flush_lsn at some point
         self._ready_replicas = CaseInsensitiveDict({})  # keys: member names, values: connection pids
+        self.site = site
 
     def _handle_synchronous_standby_names_change(self) -> None:
         """Handles changes of "synchronous_standby_names" GUC.
@@ -365,24 +366,16 @@ END;$$""")
     @staticmethod
     def pick_replicas_site_balanced(current_site: str, replicas: List[_Replica]) -> List[_Replica]:
         site_replicas: defaultdict[Optional[str], List[_Replica]] = defaultdict(list)
-        remote_sites: List[str] = []
-
         for replica in replicas:
-            if replica.site is None:
-                site_replicas['__undefined__'].append(replica)
-            elif replica.site != current_site:
-                site_replicas[replica.site].append(replica)
-                if replica.site not in remote_sites:
-                    remote_sites.append(replica.site)
-            else:
-                site_replicas[current_site].append(replica)
+            site_replicas[replica.site].append(replica)
 
-        remote_sites.sort()  # Ensure consistent order of remote sites
+        # Ensure consistent order of remote sites
+        remote_sites = sorted(site for site in site_replicas if site is not None and site != current_site)
 
         # Create selection order: pick one from each remote site, then local, then undefined, then repeat
         result: List[_Replica] = []
         remote_lists = [site_replicas[site] for site in remote_sites]
-        all_iters = remote_lists + [site_replicas[current_site], site_replicas['__undefined__']]
+        all_iters = remote_lists + [site_replicas[current_site], site_replicas[None]]
 
         for round_values in zip_longest(*all_iters, fillvalue=None):
             # First N values are from remote sites
@@ -430,23 +423,21 @@ END;$$""")
 
         # Prefer members without nofailover tag. We are relying on the fact that sorts are guaranteed to be stable.
         sorted_replicas = sorted(replica_list, key=lambda x: x.nofailover)
-        current_site = cluster.status.current_site if cluster.status else None
         cross_site_mode = global_config.sync_cross_site_mode
 
-        if current_site:
-            current_site_replicas: List[_Replica] = list(filter(
-                lambda x: x.site and x.site == current_site, sorted_replicas))
-            remote_replicas: List[_Replica] = list(filter(lambda x: x.site and x.site != current_site, sorted_replicas))
+        if self.site:
+            current_site_replicas: List[_Replica] = [r for r in sorted_replicas if r.site and r.site == self.site]
+            remote_replicas: List[_Replica] = [r for r in sorted_replicas if r.site and r.site != self.site]
 
             if cross_site_mode == SyncCrossSiteMode.BALANCED:
-                selection_order = self.pick_replicas_site_balanced(current_site, sorted_replicas)
-            elif cross_site_mode != SyncCrossSiteMode.OFF:
+                selection_order = self.pick_replicas_site_balanced(self.site, sorted_replicas)
+            elif cross_site_mode != SyncCrossSiteMode.ANY:
                 if cross_site_mode in (SyncCrossSiteMode.REMOTE_ONLY, SyncCrossSiteMode.PREFER_REMOTE):
                     selection_order = remote_replicas
                 else:
                     selection_order = current_site_replicas
-                if cross_site_mode in (SyncCrossSiteMode.PREFER_LOCAL,
-                                       SyncCrossSiteMode.PREFER_REMOTE) and not selection_order:
+                if cross_site_mode in (SyncCrossSiteMode.PREFER_LOCAL, SyncCrossSiteMode.PREFER_REMOTE) and \
+                        (not selection_order or len(selection_order) < sync_node_count):
                     selection_order = sorted_replicas
             else:
                 selection_order = sorted_replicas

@@ -766,7 +766,8 @@ class Config(object):
             'name',
             'scope',
             'retry_timeout',
-            'citus'
+            'citus',
+            'site'
         )
 
         pg_config.update({p: config[p] for p in updated_fields if p in config})

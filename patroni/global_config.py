@@ -95,7 +95,7 @@ class GlobalConfig(types.ModuleType):
         try:
             val = SyncCrossSiteMode((self.get('synchronous_cross_site') or 'off').lower().replace('-', '_'))
         except ValueError:
-            val = SyncCrossSiteMode.OFF
+            val = SyncCrossSiteMode.ANY
         return val
 
     def check_mode(self, mode: str) -> bool:

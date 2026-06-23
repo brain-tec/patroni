@@ -389,16 +389,15 @@ class Ha(object):
         :returns: ``True`` if the leader key was successfully updated and we can continue to run postgres
                   as a ``primary`` or as a ``standby_leader``, otherwise ``False``.
         """
-        last_lsn = slots = site = None
+        last_lsn = slots = None
         if update_status:
             try:
                 last_lsn = self._last_wal_lsn = self.state_handler.last_operation()
                 slots = self.cluster.maybe_filter_permanent_slots(self.state_handler, self.state_handler.slots())
-                site = self.patroni.site
             except Exception:
                 logger.exception('Exception when called state_handler.last_operation()')
         try:
-            ret = self.dcs.update_leader(self.cluster, last_lsn, slots, self._failsafe_config(), site)
+            ret = self.dcs.update_leader(self.cluster, last_lsn, slots, self._failsafe_config(), self.patroni.site)
         except DCSError:
             raise
         except Exception:
@@ -1450,7 +1449,7 @@ class Ha(object):
                     if quorum_vote:
                         logger.info('Got quorum vote from %s', st.member.name)
                         quorum_votes += 1
-                eligible_members.append(st)
+                    eligible_members.append(st)
 
         if current_site:
             current_site_eligible = [st for st in eligible_members

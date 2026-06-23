@@ -635,7 +635,7 @@ class SyncState(NamedTuple):
                 raise PatroniAssertionError('not a dict')
             leader = value.get('leader')
             quorum = value.get('quorum')
-            cross_site_mode = SyncCrossSiteMode(value.get('cross_site_mode', 'off'))
+            cross_site_mode = SyncCrossSiteMode(value.get('cross_site_mode', 'any'))
             return SyncState(version, leader, value.get('sync_standby'),
                              int(quorum) if leader and quorum else 0, cross_site_mode)
         except (PatroniAssertionError, TypeError, ValueError):
