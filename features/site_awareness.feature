@@ -10,6 +10,9 @@ Feature: site awareness
     Then "members/postgres-1" key in DCS has site=dc1 after 5 seconds
     And "members/postgres-2" key in DCS has site=dc2 after 5 seconds
     And "members/postgres-3" key in DCS has site=dc2 after 5 seconds
+    And postgres-1 is in sync with primary after 30 seconds
+    And postgres-2 is in sync with primary after 30 seconds
+    And postgres-3 is in sync with primary after 30 seconds
     And "status" key in DCS has dc1 in current_site
 
   Scenario: test site-aware reinit
