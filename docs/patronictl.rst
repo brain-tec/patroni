@@ -908,26 +908,26 @@ Show information about the cluster in pretty format:
 .. code:: bash
 
     $ patronictl -c postgres0.yml list batman
-    + Cluster: batman (7277694203142172922) -+-----------+----+-------------+-----+------------+-----+
-    | Member      | Host           | Role    | State     | TL | Receive LSN | Lag | Replay LSN | Lag |
-    +-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+
-    | postgresql0 | 127.0.0.1:5432 | Leader  | running   |  5 |             |     |            |     |
-    | postgresql1 | 127.0.0.1:5433 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |
-    | postgresql2 | 127.0.0.1:5434 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |
-    +-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+
+    + Cluster: batman (7277694203142172922) --------+-----------+----+-------------+-----+------------+-----+
+    | Site | Member      | Host           | Role    | State     | TL | Receive LSN | Lag | Replay LSN | Lag |
+    +------+-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+
+    | dc1  | postgresql0 | 127.0.0.1:5432 | Leader  | running   |  5 |             |     |            |     |
+    | dc1  | postgresql1 | 127.0.0.1:5433 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |
+    | dc2  | postgresql2 | 127.0.0.1:5434 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |
+    +------+-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+
 
 Show information about the cluster in pretty format with extended columns:
 
 .. code:: bash
 
     $ patronictl -c postgres0.yml list batman -e
-    + Cluster: batman (7277694203142172922) -+-----------+----+-------------+-----+------------+-----+-----------------+------------------------+-------------------+------+
-    | Member      | Host           | Role    | State     | TL | Receive LSN | Lag | Replay LSN | Lag | Pending restart | Pending restart reason | Scheduled restart | Tags |
-    +-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+-----------------+------------------------+-------------------+------+
-    | postgresql0 | 127.0.0.1:5432 | Leader  | running   |  5 |             |     |            |     |                 |                        |                   |      |
-    | postgresql1 | 127.0.0.1:5433 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |                 |                        |                   |      |
-    | postgresql2 | 127.0.0.1:5434 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |                 |                        |                   |      |
-    +-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+-----------------+------------------------+-------------------+------+
+    + Cluster: batman (7277694203142172922) --------+-----------+----+-------------+-----+------------+-----+-----------------+------------------------+-------------------+------+
+    | Site | Member      | Host           | Role    | State     | TL | Receive LSN | Lag | Replay LSN | Lag | Pending restart | Pending restart reason | Scheduled restart | Tags |
+    +------+-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+-----------------+------------------------+-------------------+------+
+    | dc1  | postgresql0 | 127.0.0.1:5432 | Leader  | running   |  5 |             |     |            |     |                 |                        |                   |      |
+    | dc1  | postgresql1 | 127.0.0.1:5433 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |                 |                        |                   |      |
+    | dc2  | postgresql2 | 127.0.0.1:5434 | Replica | streaming |  5 |   0/40004E8 |   0 |  0/40004E8 |   0 |                 |                        |                   |      |
+    +------+-------------+----------------+---------+-----------+----+-------------+-----+------------+-----+-----------------+------------------------+-------------------+------+
 
 Show information about the cluster in YAML format, with timestamp of execution:
 
@@ -939,6 +939,7 @@ Show information about the cluster in YAML format, with timestamp of execution:
       Host: 127.0.0.1:5432
       Member: postgresql0
       Role: Leader
+      Site: dc1
       State: running
       TL: 5
     - Cluster: batman
@@ -949,6 +950,7 @@ Show information about the cluster in YAML format, with timestamp of execution:
       Replay Lag: 0
       Member: postgresql1
       Role: Replica
+      Site: dc1
       State: streaming
       TL: 5
     - Cluster: batman
@@ -959,6 +961,7 @@ Show information about the cluster in YAML format, with timestamp of execution:
       Replay Lag: 0
       Member: postgresql2
       Role: Replica
+      Site: dc2
       State: streaming
       TL: 5
 
