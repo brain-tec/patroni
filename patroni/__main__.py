@@ -13,17 +13,20 @@ from argparse import Namespace
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from patroni import global_config, MIN_PSYCOPG2, MIN_PSYCOPG3, parse_version
+from patroni.collections import EMPTY_DICT
 from patroni.daemon import abstract_main, AbstractPatroniDaemon, get_base_arg_parser
+from patroni.site import ClusterSite
 from patroni.tags import Tags
 
 if TYPE_CHECKING:  # pragma: no cover
     from .config import Config
     from .dcs import Cluster
+    from .log import PatroniLogger
 
 logger = logging.getLogger(__name__)
 
 
-class Patroni(AbstractPatroniDaemon, Tags):
+class Patroni(AbstractPatroniDaemon, ClusterSite, Tags):
     """Implement ``patroni`` command daemon.
 
     :ivar version: Patroni version.
@@ -39,7 +42,7 @@ class Patroni(AbstractPatroniDaemon, Tags):
         * ``postmaster_start_time``: timestamp when Postgres was last started.
     """
 
-    def __init__(self, config: 'Config') -> None:
+    def __init__(self, config: 'Config', patroni_logger: 'PatroniLogger') -> None:
         """Create a :class:`Patroni` instance with the given *config*.
 
         Get a connection to the DCS, configure watchdog (if required), set up Patroni interface with Postgres, configure
@@ -49,6 +52,7 @@ class Patroni(AbstractPatroniDaemon, Tags):
             Expected to be instantiated and run through :func:`~patroni.daemon.abstract_main`.
 
         :param config: Patroni configuration.
+        :param patroni_logger: the logging handler for this daemon.
         """
         from patroni import thread_pool
         from patroni.api import RestApiServer
@@ -67,7 +71,8 @@ class Patroni(AbstractPatroniDaemon, Tags):
         logger.info('Patroni global thread_pool_size = %d', thread_pool_size)
         thread_pool.configure_global_pool(thread_pool_size)
 
-        super(Patroni, self).__init__(config)
+        AbstractPatroniDaemon.__init__(self, config, patroni_logger)
+        ClusterSite.__init__(self, config.get('site'))
 
         self.version = __version__
         self.dcs = get_dcs(self.config)
@@ -87,7 +92,7 @@ class Patroni(AbstractPatroniDaemon, Tags):
         self.ha = Ha(self)
 
         self._tags = self._get_tags()
-        self.next_run = time.time()
+        self.next_run = time.monotonic()
         self.scheduled_restart: Dict[str, Any] = {}
 
         self._last_effective_role = None
@@ -141,15 +146,15 @@ class Patroni(AbstractPatroniDaemon, Tags):
         member = cluster.get_member(self.config['name'], False)
         if not isinstance(member, Member):
             return
+        # Silence annoying WARNING: Retrying (...) messages when Patroni is quickly restarted.
+        configured_loggers: Dict[str, Any] = (self.config.get('log') or EMPTY_DICT).get('loggers') or {}
         try:
-            # Silence annoying WARNING: Retrying (...) messages when Patroni is quickly restarted.
-            # At this moment we don't have custom log levels configured and hence shouldn't lose anything useful.
-            self.logger.update_loggers({'urllib3.connectionpool': 'ERROR'})
+            self.logger.update_loggers({**configured_loggers, 'urllib3.connectionpool': 'ERROR'})
             _ = self.request(member, endpoint="/liveness", timeout=3)
             logger.fatal("Can't start; there is already a node named '%s' running", self.config['name'])
             sys.exit(1)
         except Exception:
-            self.logger.update_loggers({})
+            self.logger.update_loggers(configured_loggers)
 
     def _get_tags(self) -> Dict[str, Any]:
         """Get tags configured for this node, if any.
@@ -179,7 +184,8 @@ class Patroni(AbstractPatroniDaemon, Tags):
             if local:
                 self._tags = self._get_tags()
                 self.request.reload_config(self.config)
-            if local or sighup and self.api.reload_local_certificate():
+            received_new_cert = sighup and self.api.reload_local_certificate()
+            if local or received_new_cert:
                 self.api.reload_config(self.config['restapi'])
             self.watchdog.reload_config(self.config)
             self._last_effective_role = ROLE_CONFIG_SUFFIX_MAP.get(self.postgresql.role)
@@ -202,7 +208,7 @@ class Patroni(AbstractPatroniDaemon, Tags):
         already been exceeded, run the next cycle immediately.
         """
         self.next_run += self.dcs.loop_wait
-        current_time = time.time()
+        current_time = time.monotonic()
         nap_time = self.next_run - current_time
         if nap_time <= 0:
             self.next_run = current_time
@@ -211,7 +217,7 @@ class Patroni(AbstractPatroniDaemon, Tags):
             # Warn user that Patroni is not keeping up
             logger.warning("Loop time exceeded, rescheduling immediately.")
         elif self.ha.watch(nap_time):
-            self.next_run = time.time()
+            self.next_run = time.monotonic()
 
     def run(self) -> None:
         """Run ``patroni`` daemon process main loop.
@@ -219,7 +225,7 @@ class Patroni(AbstractPatroniDaemon, Tags):
         Start the REST API and keep running HA cycles every ``loop_wait`` seconds.
         """
         self.api.start()
-        self.next_run = time.time()
+        self.next_run = time.monotonic()
         super(Patroni, self).run()
 
     def _run_cycle(self) -> None:

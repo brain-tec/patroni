@@ -78,6 +78,9 @@ class TestConfig(unittest.TestCase):
             'PATRONI_EXHIBITOR_HOSTS': 'host1,host2',
             'PATRONI_EXHIBITOR_PORT': '8181',
             'PATRONI_RAFT_PARTNER_ADDRS': "'host1:1234','host2:1234'",
+            'PATRONI_RAFT_MIN_TIMEOUT': '5.0',
+            'PATRONI_RAFT_MAX_TIMEOUT': '10.0',
+            'PATRONI_RAFT_CONNECTION_TIMEOUT': 'invalid',
             'PATRONI_foo_HOSTS': '[host1,host2',  # Exception in parse_list
             'PATRONI_SUPERUSER_USERNAME': 'postgres',
             'PATRONI_SUPERUSER_PASSWORD': 'patroni',
@@ -89,6 +92,10 @@ class TestConfig(unittest.TestCase):
         })
         config = Config('postgres0.yml')
         self.assertEqual(config.local_configuration['log']['mode'], 0o123)
+        raft = config.local_configuration.get('raft', {})
+        self.assertEqual(raft.get('min_timeout'), 5.0)
+        self.assertEqual(raft.get('max_timeout'), 10.0)
+        self.assertNotIn('connection_timeout', raft)  # 'invalid' was discarded
         with patch.object(Config, '_load_config_file', Mock(return_value={'restapi': {}})):
             with patch.object(Config, '_build_effective_configuration', Mock(side_effect=Exception)):
                 config.reload_local_configuration()
@@ -313,6 +320,8 @@ class TestConfig(unittest.TestCase):
                 'pg_hba_standby_leader': ['host all all 0.0.0.0/0 trust'],
                 'pg_ident': ['mymap postgres postgres'],
                 'pg_ident_replica': ['mymap replicator replicator'],
+                'pg_hosts': ['192.0.2.1 example.com'],
+                'pg_hosts_primary': ['192.0.2.2 primary.example.com'],
             }
         })
 
@@ -322,12 +331,14 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(result['parameters']['work_mem'], '4MB')  # unchanged
         self.assertIn('scram-sha-256', result['pg_hba'][0])
         self.assertEqual(result['pg_ident'], ['mymap postgres postgres'])  # no _primary override
+        self.assertEqual(result['pg_hosts'], ['192.0.2.2 primary.example.com'])
 
         # Test REPLICA role - should apply _replica overrides
         result = self.config.build_effective_postgresql_configuration(PostgresqlRole.REPLICA)
         self.assertEqual(result['parameters']['shared_buffers'], '128MB')
         self.assertIn('md5', result['pg_hba'][0])  # no _replica override
         self.assertEqual(result['pg_ident'], ['mymap replicator replicator'])
+        self.assertEqual(result['pg_hosts'], ['192.0.2.1 example.com'])
 
         # Test STANDBY_LEADER role - should apply _standby_leader overrides
         result = self.config.build_effective_postgresql_configuration(PostgresqlRole.STANDBY_LEADER)

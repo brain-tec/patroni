@@ -19,8 +19,8 @@ from .exceptions import ConfigParseError
 from .file_perm import pg_perm
 from .postgresql.config import ConfigHandler
 from .postgresql.misc import PostgresqlRole
-from .utils import deep_compare, parse_bool, parse_int, patch_config
-from .validator import IntValidator
+from .utils import deep_compare, parse_bool, parse_int, parse_real, patch_config
+from .validator import IntValidator, validate_name
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ ROLE_CONFIG_SUFFIX_MAP: Dict[PostgresqlRole, PostgresqlRole] = {
 
 
 def default_validator(conf: Dict[str, Any]) -> List[str]:
-    """Ensure *conf* is not empty.
+    """Ensure *conf* is not empty and name key is valid.
 
     Designed to be used as default validator for :class:`Config` objects, if no specific validator is provided.
 
@@ -59,10 +59,11 @@ def default_validator(conf: Dict[str, Any]) -> List[str]:
         validating the configuration.
 
     :raises:
-        :class:`ConfigParseError`: if *conf* is empty.
+        :class:`ConfigParseError`: if *conf* is empty or "name" doesn't pass validation.
     """
     if not conf:
         raise ConfigParseError("Config is empty.")
+    validate_name(conf.get('name'))
     return []
 
 
@@ -499,7 +500,7 @@ class Config(object):
             """
             return os.environ.pop(PATRONI_ENV_PREFIX + name.upper(), None)
 
-        for param in ('name', 'namespace', 'scope', 'thread_pool_size', 'thread_stack_size'):
+        for param in ('name', 'namespace', 'scope', 'site', 'thread_pool_size', 'thread_stack_size'):
             value = _popenv(param)
             if value:
                 ret[param] = value
@@ -555,7 +556,9 @@ class Config(object):
         _set_section_values('log', ['type', 'level', 'traceback_level', 'format', 'dateformat', 'static_fields',
                                     'max_queue_size', 'dir', 'mode', 'file_size', 'file_num', 'loggers',
                                     'deduplicate_heartbeat_logs'])
-        _set_section_values('raft', ['data_dir', 'self_addr', 'partner_addrs', 'password', 'bind_addr'])
+        _set_section_values('raft', ['data_dir', 'self_addr', 'partner_addrs', 'password', 'bind_addr',
+                                     'min_timeout', 'max_timeout', 'connection_timeout',
+                                     'append_entries_period', 'connection_retry_time', 'leader_fallback_timeout'])
 
         for binary in ('pg_ctl', 'initdb', 'pg_controldata', 'pg_basebackup', 'postgres', 'pg_isready', 'pg_rewind'):
             value = _popenv('POSTGRESQL_BIN_' + binary)
@@ -579,6 +582,14 @@ class Config(object):
                     value = parse_int(value)
                     if value is not None:
                         ret[first][second] = value
+
+        for param in ('min_timeout', 'max_timeout', 'connection_timeout',
+                      'append_entries_period', 'connection_retry_time', 'leader_fallback_timeout'):
+            value = ret.get('raft', {}).pop(param, None)
+            if value:
+                value = parse_real(value)
+                if value is not None:
+                    ret['raft'][param] = value
 
         def _parse_list(value: str) -> Optional[List[str]]:
             """Parse an YAML list *value* as a :class:`list`.
@@ -770,7 +781,8 @@ class Config(object):
             'name',
             'scope',
             'retry_timeout',
-            'citus'
+            'citus',
+            'site'
         )
 
         pg_config.update({p: config[p] for p in updated_fields if p in config})
@@ -830,6 +842,7 @@ class Config(object):
         2. Applying role-specific parameter overrides (parameters_primary, etc.) - merged with base
         3. Applying role-specific pg_hba overrides (pg_hba_primary, etc.) - full replacement
         4. Applying role-specific pg_ident overrides (pg_ident_primary, etc.) - full replacement
+        5. Applying role-specific pg_hosts overrides (pg_hosts_primary, etc.) - full replacement
 
         .. note::
             Protected parameters from ConfigHandler.CMDLINE_OPTIONS are never overridden.
@@ -856,15 +869,11 @@ class Config(object):
                     logger.warning("Role-based config attempted to override protected parameter '%s', ignoring", param)
             pg_config['parameters'] = base_params
 
-        # Fully replace pg_hba, not merge
-        role_hba_key = f'pg_hba_{role_suffix}'
-        if role_hba_key in pg_config:
-            pg_config['pg_hba'] = pg_config[role_hba_key]
-
-        # Fully replace pg_ident, not merge
-        role_ident_key = f'pg_ident_{role_suffix}'
-        if role_ident_key in pg_config:
-            pg_config['pg_ident'] = pg_config[role_ident_key]
+        # Fully replace role-specific file contents, not merge
+        for name in ('pg_hba', 'pg_ident', 'pg_hosts'):
+            role_config_key = f'{name}_{role_suffix}'
+            if role_config_key in pg_config:
+                pg_config[name] = pg_config[role_config_key]
 
         return pg_config
 

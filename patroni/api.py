@@ -166,7 +166,6 @@ class RestApiHandler(BaseHTTPRequestHandler):
         :param headers: dictionary of additional HTTP headers to set for the response. Each key is the header name, and
             the corresponding value is the value for the header in the response.
         """
-        # TODO: try-catch ConnectionResetError: [Errno 104] Connection reset by peer and log it in DEBUG level
         self.send_response(status_code)
         headers = headers or {}
         if content_type:
@@ -228,6 +227,9 @@ class RestApiHandler(BaseHTTPRequestHandler):
             'scope': patroni.postgresql.scope,
             'name': patroni.postgresql.name
         }
+
+        if patroni.site:
+            response['site'] = patroni.site
         if patroni.scheduled_restart:
             response['scheduled_restart'] = patroni.scheduled_restart.copy()
             del response['scheduled_restart']['postmaster_start_time']
@@ -463,7 +465,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
         liveness_threshold = patroni.dcs.ttl * (1 if is_primary else 2)
 
         # In maintenance mode (pause) we are fine if heartbeat loop stuck.
-        status_code = 200 if patroni.ha.is_paused() or patroni.next_run + liveness_threshold > time.time() else 503
+        status_code = 200 if patroni.ha.is_paused() or patroni.next_run + liveness_threshold > time.monotonic() else 503
         self._write_status_code_only(status_code)
 
     def _readiness(self) -> Optional[str]:
@@ -616,10 +618,16 @@ class RestApiHandler(BaseHTTPRequestHandler):
             * ``patroni_failsafe_mode_is_active``: ``1`` if ``failsafe_mode`` is currently active, else ``0``;
             * ``patroni_failsafe_mode_enabled``: ``1`` if ``failsafe_mode`` is enabled in configuration, else ``0``;
             * ``patroni_failsafe_member``: ``1`` if this node is a member of failsafe topology, else ``0``;
+            * ``patroni_failover_priority``: failover priority of this node (``0`` if ``nofailover`` is set, else value
+              of ``failover_priority`` tag, defaulting to ``1``);
             * ``patroni_postgres_timeline``: PostgreSQL timeline based on current WAL file name;
             * ``patroni_dcs_last_seen``: epoch timestamp when DCS was last contacted successfully;
             * ``patroni_pending_restart``: ``1`` if this PostgreSQL node is pending a restart, else ``0``;
             * ``patroni_is_paused``: ``1`` if Patroni is in maintenance node, else ``0``.
+
+        If the REST API is running in HTTPS mode the response will also have the following:
+
+            * ``patroni_restapi_certificate_expiry``: epoch timestamp when the REST API certificate expires.
 
         For PostgreSQL v9.6+ the response will also have the following:
 
@@ -714,7 +722,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
 
         metrics.append("# HELP patroni_postgres_server_version Version of Postgres (if running), 0 otherwise.")
         metrics.append("# TYPE patroni_postgres_server_version gauge")
-        metrics.append("patroni_postgres_server_version {0} {1}".format(labels, postgres.get('server_version', 0)))
+        metrics.append("patroni_postgres_server_version{0} {1}".format(labels, postgres.get('server_version', 0)))
 
         metrics.append("# HELP patroni_cluster_unlocked Value is 1 if the cluster is unlocked, 0 if locked.")
         metrics.append("# TYPE patroni_cluster_unlocked gauge")
@@ -736,7 +744,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
         metrics.append("patroni_failsafe_member{0} {1}".format(labels, int(is_failsafe_member)))
 
         metrics.append("# HELP patroni_postgres_timeline Postgres timeline of this node (if running), 0 otherwise.")
-        metrics.append("# TYPE patroni_postgres_timeline counter")
+        metrics.append("# TYPE patroni_postgres_timeline gauge")
         metrics.append("patroni_postgres_timeline{0} {1}".format(labels, postgres.get('timeline') or 0))
 
         metrics.append("# HELP patroni_dcs_last_seen Epoch timestamp when DCS was last contacted successfully"
@@ -761,6 +769,16 @@ class RestApiHandler(BaseHTTPRequestHandler):
         current_state = postgres['state']
         state_value = current_state.index if isinstance(current_state, PostgresqlState) else -1
         metrics.append(f"patroni_postgres_state{labels} {state_value}")
+
+        metrics.append("# HELP patroni_failover_priority Failover priority of this node.")
+        metrics.append("# TYPE patroni_failover_priority gauge")
+        metrics.append("patroni_failover_priority{0} {1}".format(labels, patroni.failover_priority))
+
+        if self.server.ssl_not_after is not None:
+            metrics.append("# HELP patroni_restapi_certificate_expiry Epoch timestamp when the REST API"
+                           " certificate expires.")
+            metrics.append("# TYPE patroni_restapi_certificate_expiry gauge")
+            metrics.append("patroni_restapi_certificate_expiry{0} {1}".format(labels, self.server.ssl_not_after))
 
         self.write_response(200, '\n'.join(metrics) + '\n', content_type='text/plain')
 
@@ -1073,7 +1091,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
         """
         failover = self.server.patroni.dcs.get_cluster().failover
         if failover and failover.scheduled_at:
-            if not self.server.patroni.dcs.manual_failover('', '', version=failover.version):
+            if not self.server.patroni.dcs.manual_failover('', '', '', version=failover.version):
                 return self.send_error(409)
             else:
                 data = "scheduled switchover deleted"
@@ -1141,19 +1159,21 @@ class RestApiHandler(BaseHTTPRequestHandler):
                     else:
                         return 200, '{0}ed over to "{1}" instead of "{2}"'.format(action[:-4].title(),
                                                                                   cluster.leader.name, candidate)
-                if not cluster.failover:
+                if not cluster.failover and not cluster.is_unlocked():
                     return 503, action.title() + ' failed'
             except Exception as e:
                 logger.debug('Exception occurred during polling %s result: %s', action, e)
-        return 503, action.title() + ' status unknown'
+        return 503, '{0} status unknown after {1} seconds; operation may still be in progress'.format(
+            action.title(), timeout * 2)
 
     def is_failover_possible(self, cluster: Cluster, leader: Optional[str], candidate: Optional[str],
-                             action: str) -> Optional[str]:
+                             site: Optional[str], action: str) -> Optional[str]:
         """Checks whether there are nodes that could take over after demoting the primary.
 
         :param cluster: the Patroni cluster.
         :param leader: name of the current Patroni leader.
         :param candidate: name of the Patroni node to be promoted.
+        :param site: name of the site to failover/switchover to.
         :param action: the action to be performed (``switchover`` or ``failover``).
 
         :returns: a string with the error message or ``None`` if good nodes are found.
@@ -1168,14 +1188,21 @@ class RestApiHandler(BaseHTTPRequestHandler):
             members = [m for m in cluster.members if m.name == candidate]
             if not members:
                 return 'candidate does not exists'
-        elif config.is_synchronous_mode and not config.is_quorum_commit_mode:
-            members = [m for m in cluster.members if cluster.sync.matches(m.name)]
-            if not members:
-                return action + ' is not possible: can not find sync_standby'
         else:
-            members = [m for m in cluster.members if not cluster.leader or m.name != cluster.leader.name and m.api_url]
-            if not members:
-                return action + ' is not possible: cluster does not have members except leader'
+            members = cluster.members
+            if site:
+                members = [m for m in cluster.members if m.site == site]
+                if not members:
+                    return action + ' is not possible: can not find members in site ' + site
+            if config.is_synchronous_mode and not config.is_quorum_commit_mode:
+                members = [m for m in members if cluster.sync.matches(m.name)]
+                if not members:
+                    return action + ' is not possible: can not find sync_standby'
+            else:
+                members = [m for m in members if not cluster.leader or m.name != cluster.leader.name and m.api_url]
+                if not members:
+                    return action + ' is not possible: cluster does not have members except leader'
+
         for st in self.server.patroni.ha.fetch_nodes_statuses(members):
             if st.failover_limitation() is None:
                 return None
@@ -1192,7 +1219,8 @@ class RestApiHandler(BaseHTTPRequestHandler):
             * ``leader``: name of the current leader in the cluster;
             * ``candidate``: name of the Patroni node to be promoted;
             * ``scheduled_at``: a string representing the timestamp when to execute the switchover/failover, e.g.
-                ``2023-04-14T20:27:00+00:00``.
+                ``2023-04-14T20:27:00+00:00``;
+            * ``site``: name of the cluster site to choose a candidate from.
 
         Response HTTP status codes:
 
@@ -1216,11 +1244,12 @@ class RestApiHandler(BaseHTTPRequestHandler):
         leader = request.get('leader')
         candidate = request.get('candidate') or request.get('member')
         scheduled_at = request.get('scheduled_at')
+        site = request.get('site') if not candidate else None
         cluster = self.server.patroni.dcs.get_cluster()
         config = global_config.from_cluster(cluster)
 
-        logger.info("received %s request with leader=%s candidate=%s scheduled_at=%s",
-                    action, leader, candidate, scheduled_at)
+        logger.info("received %s request with leader=%s candidate=%s site=%s scheduled_at=%s",
+                    action, leader, candidate, site, scheduled_at)
 
         if action == 'failover' and not candidate:
             data = 'Failover could be performed only to a specific candidate'
@@ -1246,12 +1275,12 @@ class RestApiHandler(BaseHTTPRequestHandler):
             data = 'Switchover target and source are the same'
 
         if not data and not scheduled_at:
-            data = self.is_failover_possible(cluster, leader, candidate, action)
+            data = self.is_failover_possible(cluster, leader, candidate, site, action)
             if data:
                 status_code = 412
 
         if not data:
-            if self.server.patroni.dcs.manual_failover(leader, candidate, scheduled_at=scheduled_at):
+            if self.server.patroni.dcs.manual_failover(leader, candidate, scheduled_at=scheduled_at, site=site):
                 self.server.patroni.ha.wakeup()
                 if scheduled_at:
                     data = action.title() + ' scheduled'
@@ -1475,7 +1504,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
         .. note::
             This is only used to keep track of latency when logging messages through :func:`log_message`.
         """
-        self.__start_time = time.time()
+        self.__start_time = time.monotonic()
         BaseHTTPRequestHandler.handle_one_request(self)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -1486,7 +1515,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
         :param format: printf-style format string message to be logged.
         :param args: arguments to be applied as inputs to *format*.
         """
-        latency = 1000.0 * (time.time() - self.__start_time)
+        latency = 1000.0 * (time.monotonic() - self.__start_time)
         logger.debug("API thread: %s - - %s latency: %0.3f ms", self.client_address[0], format % args, latency)
 
 
@@ -1521,9 +1550,19 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
         self._executor = PatroniThreadPoolExecutor(max_workers=thread_pool_size + 1, thread_name_prefix='RestAPI')
         self.__ssl_options: Dict[str, Any] = {}
         self.__ssl_serial_number = None
+        self.__ssl_not_after: Optional[int] = None
         self._received_new_cert = False
         self.reload_config(config)
         self.daemon = True
+
+    @property
+    def ssl_not_after(self) -> Optional[int]:
+        """Epoch timestamp when the certificate used by the REST API expires.
+
+        It is ``None`` when the REST API is not running in HTTPS mode, or when the expiry could not be read from the
+        certificate.
+        """
+        return self.__ssl_not_after
 
     def construct_server_tokens(self, token_config: str) -> str:
         """Construct the value for the ``Server`` HTTP header based on *server_tokens*.
@@ -1793,6 +1832,7 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
         # wrap socket with ssl if 'certfile' is defined in a config.yaml
         # Sometime it's also needed to pass reference to a 'keyfile'.
         self.__protocol = 'https' if ssl_options.get('certfile') else 'http'
+        self.__ssl_not_after = None
         if self.__protocol == 'https':
             import ssl
             ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH, cafile=ssl_options.get('cafile'))
@@ -1807,7 +1847,7 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
                     ctx.verify_mode = modes[verify_client]
                 else:
                     logger.error('Bad value in the "restapi.verify_client": %s', verify_client)
-            self.__ssl_serial_number = self.get_certificate_serial_number()
+            self.__ssl_serial_number, self.__ssl_not_after = self.parse_certificate()
             self.socket = ctx.wrap_socket(self.socket, server_side=True, do_handshake_on_connect=False)
         if reloading_config:
             self.start()
@@ -1832,12 +1872,43 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
         if hasattr(request, 'context'):  # SSLSocket
             from ssl import SSLSocket
             if isinstance(request, SSLSocket):  # pyright
-                request.do_handshake()
+                try:
+                    request.do_handshake()
+                except OSError as e:
+                    # The client may reset the connection (or otherwise fail the TLS handshake, e.g.
+                    # ssl.SSLError or a timeout -- all OSError subclasses) before we even start handling
+                    # the request. In that case the parent process_request_thread(), which is responsible
+                    # for closing the socket, is never reached, so we shut the request down ourselves and
+                    # log at DEBUG instead of leaking it.
+                    logger.debug('Connection from %s:%s was reset during the SSL handshake: %r',
+                                 client_address[0], client_address[1], e)
+                    self.shutdown_request(request)
+                    return
         super(RestApiServer, self).process_request_thread(request, client_address)
 
     def process_request(self, request: Union[socket.socket, Tuple[bytes, socket.socket]],
                         client_address: Tuple[str, int]) -> None:
         self._executor.submit(self.process_request_thread, request, client_address)
+
+    def finish_request(self, request: Union[socket.socket, Tuple[bytes, socket.socket]],
+                       client_address: Tuple[str, int]) -> None:
+        """Finish one request by instantiating the request handler class.
+
+        Wrapper for :func:`~socketserver.BaseServer.finish_request` that intercepts :class:`OSError`
+        exceptions raised while handling the request. A client (typically a load-balancer performing
+        health-checks) may drop the connection before Patroni is done writing the response -- a
+        connection reset or broken pipe on a plain socket, or an :class:`ssl.SSLError` on a TLS one
+        (all :class:`OSError` subclasses). There is nothing we can do about it, and it is not worth
+        letting it propagate to :func:`handle_error`, which would pollute the log with a WARNING and a
+        stack trace, so we just log it at the DEBUG level.
+
+        :param request: socket to handle the client request.
+        :param client_address: tuple containing the client IP and port.
+        """
+        try:
+            super(RestApiServer, self).finish_request(request, client_address)
+        except OSError as e:
+            logger.debug('Connection from %s:%s was reset: %r', client_address[0], client_address[1], e)
 
     def shutdown(self) -> None:
         super(RestApiServer, self).shutdown()
@@ -1861,19 +1932,37 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
                 logger.debug('Failed to shutdown SSL connection: %r', e)
         super(RestApiServer, self).shutdown_request(request)
 
-    def get_certificate_serial_number(self) -> Optional[str]:
-        """Get serial number of the certificate used by the REST API.
+    def parse_certificate(self) -> Tuple[Optional[str], Optional[int]]:
+        """Parse the certificate used by the REST API.
 
-        :returns: serial number of the certificate configured through ``restapi.certfile`` setting.
+        :returns: a tuple composed of 2 items:
+
+            * serial number of the certificate configured through ``restapi.certfile`` setting, or ``None`` if it
+              could not be read;
+            * epoch timestamp when that certificate expires, or ``None`` if it could not be read.
         """
         certfile: Optional[str] = self.__ssl_options.get('certfile')
-        if certfile:
-            import ssl
+        if not certfile:
+            return None, None
+
+        import ssl
+        try:
+            crt = cast(Dict[str, Any], ssl._ssl._test_decode_cert(certfile))  # pyright: ignore
+        except ssl.SSLError as e:
+            logger.error('Failed to decode certificate %s: %r', certfile, e)
+            return None, None
+
+        serial_number: Optional[str] = crt.get('serialNumber')
+        not_after = crt.get('notAfter')
+        expiry: Optional[int] = None
+        if isinstance(not_after, str):
             try:
-                crt = cast(Dict[str, Any], ssl._ssl._test_decode_cert(certfile))  # pyright: ignore
-                return crt.get('serialNumber')
-            except ssl.SSLError as e:
-                logger.error('Failed to get serial number from certificate %s: %r', self.__ssl_options['certfile'], e)
+                expiry = ssl.cert_time_to_seconds(not_after)
+            except ValueError as e:
+                logger.error('Failed to get expiry from certificate %s: %r', certfile, e)
+        else:
+            logger.error('Certificate %s does not have the "notAfter" field', certfile)
+        return serial_number, expiry
 
     def reload_local_certificate(self) -> Optional[bool]:
         """Reload the SSL certificate used by the REST API.
@@ -1882,7 +1971,7 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
             otherwise.
         """
         if self.__protocol == 'https':
-            on_disk_cert_serial_number = self.get_certificate_serial_number()
+            on_disk_cert_serial_number, self.__ssl_not_after = self.parse_certificate()
             if on_disk_cert_serial_number != self.__ssl_serial_number:
                 self._received_new_cert = True
                 self.__ssl_serial_number = on_disk_cert_serial_number

@@ -25,7 +25,7 @@ import time
 from collections import OrderedDict
 from json import JSONDecoder
 from shlex import split
-from typing import Any, Callable, cast, Dict, Iterator, List, Optional, Tuple, Type, TYPE_CHECKING, Union
+from typing import Any, Callable, cast, Dict, Iterator, List, Mapping, Optional, Tuple, Type, TYPE_CHECKING, Union
 
 from dateutil import tz
 from urllib3.response import HTTPResponse
@@ -79,7 +79,7 @@ def get_conversion_table(base_unit: str) -> Dict[str, Dict[str, Union[int, float
     return OrderedDict()
 
 
-def deep_compare(obj1: Dict[Any, Any], obj2: Dict[Any, Any]) -> bool:
+def deep_compare(obj1: Mapping[Any, Any], obj2: Mapping[Any, Any]) -> bool:
     """Recursively compare two dictionaries to check if they are equal in terms of keys and values.
 
     .. note::
@@ -111,8 +111,8 @@ def deep_compare(obj1: Dict[Any, Any], obj2: Dict[Any, Any]) -> bool:
         return False
 
     for key, value in obj1.items():
-        if isinstance(value, dict):
-            if not (isinstance(obj2[key], dict) and deep_compare(cast(Dict[Any, Any], value), obj2[key])):
+        if isinstance(value, Mapping):
+            if not (isinstance(obj2[key], Mapping) and deep_compare(cast(Mapping[Any, Any], value), obj2[key])):
                 return False
         elif str(value) != str(obj2[key]):
             return False
@@ -713,7 +713,7 @@ class Retry(object):
     @property
     def stoptime(self) -> float:
         """Get the current stop time."""
-        return self._cur_stoptime or 0
+        return float('-inf') if self._cur_stoptime is None else self._cur_stoptime
 
     def ensure_deadline(self, timeout: float, raise_ex: Optional[Exception] = None) -> bool:
         """Calculates and checks the remaining deadline time.
@@ -727,7 +727,7 @@ class Retry(object):
         :raises:
             :class:`Exception`: *raise_ex* if calculated deadline is smaller than provided *timeout*.
         """
-        if self.stoptime - time.time() < timeout:
+        if self.stoptime - time.monotonic() < timeout:
             if raise_ex:
                 raise raise_ex
             return False
@@ -759,7 +759,7 @@ class Retry(object):
         while True:
             try:
                 if self.deadline is not None and self._cur_stoptime is None:
-                    self._cur_stoptime = time.time() + self.deadline
+                    self._cur_stoptime = time.monotonic() + self.deadline
                 return func(*args, **kwargs)
             except self.retry_exceptions as e:
                 # Note: max_tries == -1 means infinite tries.
@@ -771,7 +771,7 @@ class Retry(object):
                 if not isinstance(sleeptime, (int, float)):
                     sleeptime = self.sleeptime
 
-                if self._cur_stoptime is not None and time.time() + sleeptime >= self._cur_stoptime:
+                if self._cur_stoptime is not None and time.monotonic() + sleeptime >= self._cur_stoptime:
                     logger.warning('Retry got exception: %s', e)
                     raise RetryFailedError("Exceeded retry deadline")
                 logger.debug('Retry got exception: %s', e)
@@ -790,10 +790,10 @@ def polling_loop(timeout: Union[int, float], interval: Union[int, float] = 1) ->
 
     :yields: current iteration counter, starting from ``0``.
     """
-    start_time = time.time()
+    start_time = time.monotonic()
     iteration = 0
     end_time = start_time + timeout
-    while time.time() < end_time:
+    while time.monotonic() < end_time:
         yield iteration
         iteration += 1
         time.sleep(float(interval))
@@ -971,7 +971,8 @@ def cluster_as_json(cluster: 'Cluster') -> Dict[str, Any]:
             member['host'] = conn_kwargs['host']
             if conn_kwargs.get('port'):
                 member['port'] = int(conn_kwargs['port'])
-        optional_attributes = ('timeline', 'pending_restart', 'pending_restart_reason', 'scheduled_restart', 'tags')
+        optional_attributes = ('timeline', 'pending_restart', 'pending_restart_reason',
+                               'scheduled_restart', 'tags', 'site')
         member.update({n: m.data[n] for n in optional_attributes if n in m.data})
 
         if m.name != leader_name:
@@ -1001,6 +1002,8 @@ def cluster_as_json(cluster: 'Cluster') -> Dict[str, Any]:
             ret['scheduled_switchover']['from'] = cluster.failover.leader
         if cluster.failover.candidate:
             ret['scheduled_switchover']['to'] = cluster.failover.candidate
+        elif cluster.failover.site:
+            ret['scheduled_switchover']['to'] = 'site ' + cluster.failover.site
     return ret
 
 

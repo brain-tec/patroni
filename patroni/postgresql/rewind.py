@@ -20,6 +20,14 @@ from .misc import format_lsn, fsync_dir, parse_history, parse_lsn, PostgresqlRol
 
 logger = logging.getLogger(__name__)
 
+# Message format depends on the major version:
+# - v19 changed LSN formatting in error messages
+# - expected at least -- starting from v16
+# - wanted -- before v16
+# - nothing (end of message) 9.5 and older
+WALDUMP_ERROR_RE = re.compile(r"^.*error in WAL record at ([0-9A-Fa-f]+/[0-9A-Fa-f]+): invalid record "
+                              "length at ([0-9A-Fa-f]+/[0-9A-Fa-f]+)")  # (?:: expected at least |: wanted |$)
+
 
 class REWIND_STATUS(IntEnum):
     INITIAL = 0
@@ -95,7 +103,7 @@ class Rewind(object):
     @staticmethod
     def check_leader_is_not_in_recovery(conn_kwargs: Dict[str, Any]) -> Optional[bool]:
         try:
-            with get_connection_cursor(connect_timeout=3, options='-c statement_timeout=2000', **conn_kwargs) as cur:
+            with get_connection_cursor(**conn_kwargs) as cur:
                 cur.execute('SELECT pg_catalog.pg_is_in_recovery()')
                 row = cur.fetchone()
                 if not row or not row[0]:
@@ -107,7 +115,7 @@ class Rewind(object):
     @staticmethod
     def check_leader_has_run_checkpoint(conn_kwargs: Dict[str, Any]) -> Optional[str]:
         try:
-            with get_connection_cursor(connect_timeout=3, options='-c statement_timeout=2000', **conn_kwargs) as cur:
+            with get_connection_cursor(**conn_kwargs) as cur:
                 cur.execute("SELECT NOT pg_catalog.pg_is_in_recovery()"
                             " AND ('x' || pg_catalog.substr(pg_catalog.pg_walfile_name("
                             " pg_catalog.pg_current_wal_lsn()), 1, 8))::bit(32)::int = timeline_id"
@@ -146,22 +154,12 @@ class Rewind(object):
         if out is not None and err is not None:
             out = out.decode('utf-8').rstrip().split('\n')
             err = err.decode('utf-8').rstrip().split('\n')
-            pattern = 'error in WAL record at {0}: invalid record length at '.format(lsn_str)
 
-            if len(out) == 1 and len(err) == 1 and ', lsn: {0}, prev '.format(lsn8) in out[0] and pattern in err[0]:
-                i = err[0].find(pattern) + len(pattern)
-                # Message format depends on the major version:
-                # * expected at least -- starting from v16
-                # * wanted -- before v16
-                # * nothing (end of message) 9.5 and older
-                # We will simply check all possible combinations.
-                for pattern in (': expected at least ', ': wanted ', '\n'):
-                    j = (err[0] + '\n').find(pattern, i)
-                    if j > -1:
-                        try:
-                            return parse_lsn(err[0][i:j])
-                        except Exception as e:
-                            logger.error('Failed to parse lsn %s: %r', err[0][i:j], e)
+            if len(out) == 1 and len(err) == 1 and ', lsn: {0}, prev '.format(lsn8) in out[0]:
+                m = WALDUMP_ERROR_RE.match(err[0])
+                if m and parse_lsn(m.group(1)) == lsn:
+                    return parse_lsn(m.group(2))
+
             logger.error('Failed to parse pg_%sdump output', self._postgresql.wal_name)
             logger.error(' stdout=%s', '\n'.join(out))
             logger.error(' stderr=%s', '\n'.join(err))
@@ -195,11 +193,19 @@ class Rewind(object):
         return in_recovery, timeline, lsn
 
     def _get_local_timeline_lsn(self) -> Tuple[Optional[bool], Optional[int], Optional[int]]:
+        in_recovery = timeline = lsn = None
         if self._postgresql.is_running():  # if postgres is running - get timeline from replication connection
+            try:
+                timeline = self._postgresql.get_replica_timeline()
+                lsn = self._postgresql.replay_lsn()
+            except Exception:
+                if not self._postgresql.is_starting():
+                    return None, None, None
+                logger.info('PostgreSQL is still starting, will use pg_controldata as a fallback')
             in_recovery = True
-            timeline = self._postgresql.get_replica_timeline()
-            lsn = self._postgresql.replay_lsn()
-        else:  # otherwise analyze pg_controldata output
+
+        if timeline is None and lsn is None:
+            # analyze pg_controldata output if not running or not accepting connections
             in_recovery, timeline, lsn = self._get_local_timeline_lsn_from_controldata()
 
         log_lsn = format_lsn(lsn) if isinstance(lsn, int) else lsn
@@ -387,6 +393,16 @@ class Rewind(object):
         logger.info('Trying to fetch the missing wal: %s', cmd)
         return self._postgresql.cancellable.call(shlex.split(cmd)) == 0
 
+    @staticmethod
+    def _log_output_line(name: str, line: bytes) -> None:
+        """Log a single line of ``pg_rewind`` output.
+
+        :param name: name of the stream the line was read from, ``stdout`` or ``stderr``.
+        :param line: one line of output without the trailing newline.
+        """
+        if line:
+            logger.info('pg_rewind: %s', line.decode('utf-8', 'replace'))
+
     def _find_missing_wal(self, data: bytes) -> Optional[str]:
         # could not open file "$PGDATA/pg_wal/0000000A00006AA100000068": No such file or directory
         pattern = 'could not open file "'
@@ -488,16 +504,21 @@ class Rewind(object):
         cmd.extend(['-D', self._postgresql.data_dir, '--source-server', dsn])
         cmd.extend(user_options)
 
+        # pg_rewind --progress reports the copy progress while it is running, therefore
+        # the output is streamed to the log as it arrives instead of being dumped after exit
+        stream_cb = self._log_output_line if '--progress' in user_options else None
+
         while True:
             results: Dict[str, bytes] = {}
-            ret = self._postgresql.cancellable.call(cmd, env=env, communicate=results)
+            ret = self._postgresql.cancellable.call(cmd, env=env, communicate=results, stream_cb=stream_cb)
 
             logger.info('pg_rewind exit code=%s', ret)
             if ret is None:
                 return False
 
-            logger.info(' stdout=%s', results['stdout'].decode('utf-8'))
-            logger.info(' stderr=%s', results['stderr'].decode('utf-8'))
+            if stream_cb is None:  # streamed output has already been logged line by line
+                logger.info(' stdout=%s', results['stdout'].decode('utf-8'))
+                logger.info(' stderr=%s', results['stderr'].decode('utf-8'))
             if ret == 0:
                 return True
 
