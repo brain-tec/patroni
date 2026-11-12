@@ -19,7 +19,7 @@ import traceback
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from ipaddress import ip_address, ip_network, IPv4Network, IPv6Network
-from socketserver import ThreadingMixIn
+from socketserver import TCPServer, ThreadingMixIn
 from typing import Any, Callable, cast, Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import parse_qs, urlparse
 
@@ -840,7 +840,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 status_code = 422
             else:
                 status_code = None
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ArithmeticError):
             logger.exception('Invalid scheduled %s time: %s', action, schedule)
             error = 'Unable to parse scheduled timestamp. It should be in an unambiguous format, e.g. ISO 8601'
             status_code = 422
@@ -1047,7 +1047,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
                     else:
                         return 200, '{0}ed over to "{1}" instead of "{2}"'.format(action[:-4].title(),
                                                                                   cluster.leader.name, candidate)
-                if not cluster.failover:
+                if not cluster.failover and not cluster.is_unlocked():
                     return 503, action.title() + ' failed'
             except Exception as e:
                 logger.debug('Exception occurred during polling %s result: %s', action, e)
@@ -1182,7 +1182,6 @@ class RestApiHandler(BaseHTTPRequestHandler):
         """
         self.do_POST_failover(action='switchover')
 
-    @check_access
     def do_POST_citus(self) -> None:
         """Handle a ``POST`` request to ``/citus`` path.
 
@@ -1191,6 +1190,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
         """
         self.do_POST_mpp()
 
+    @check_access
     def do_POST_mpp(self) -> None:
         """Handle a ``POST`` request to ``/mpp`` path.
 
@@ -1369,6 +1369,16 @@ class RestApiHandler(BaseHTTPRequestHandler):
         result['dcs_last_seen'] = self.server.patroni.dcs.last_seen
         return result
 
+    def setup(self) -> None:
+        """Prepare the connection to handle a request.
+
+        Wrapper for :func:`~socketserver.StreamRequestHandler.setup` that additionally arms a timeout on
+        the connection. Without it a client that connects and then stays silent, or that never reads
+        the response, holds one of the ``restapi.thread_pool_size`` workers forever.
+        """
+        super(RestApiHandler, self).setup()
+        self.connection.settimeout(self.server.request_timeout)
+
     def handle_one_request(self) -> None:
         """Parse and dispatch a request to the appropriate ``do_*`` method.
 
@@ -1376,7 +1386,11 @@ class RestApiHandler(BaseHTTPRequestHandler):
             This is only used to keep track of latency when logging messages through :func:`log_message`.
         """
         self.__start_time = time.time()
-        BaseHTTPRequestHandler.handle_one_request(self)
+        try:
+            BaseHTTPRequestHandler.handle_one_request(self)
+        except Exception:
+            self.send_error(503)
+            raise
 
     def log_message(self, format: str, *args: Any) -> None:
         """Log a custom ``debug`` message.
@@ -1408,10 +1422,12 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
         self.__auth_key = None
         self.__allowlist_include_members: Optional[bool] = None
         self.__allowlist: Tuple[Union[IPv4Network, IPv6Network], ...] = ()
+        self.__handshake_timeout: int = 2
         self.http_extra_headers: Dict[str, str] = {}
         self.patroni = patroni
         self.__listen = None
         self.request_queue_size = int(config.get('request_queue_size', 5))
+        self.request_timeout: int = 5
         try:
             thread_pool_size = max(5, int(config.get('thread_pool_size', 5)))
         except Exception as e:
@@ -1570,6 +1586,16 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
             return rh.write_response(401, reason, headers=headers)
         return True
 
+    def server_bind(self) -> None:
+        """Bind the REST API socket without resolving its address to a hostname.
+
+        ``HTTPServer.server_bind`` performs a reverse DNS lookup that Patroni does not need and that can block startup
+        when name resolution is slow.
+        """
+        TCPServer.server_bind(self)
+        self.server_name = str(self.server_address[0])
+        self.server_port = self.server_address[1]
+
     @staticmethod
     def __has_dual_stack() -> bool:
         """Check if the system has support for dual stack sockets.
@@ -1705,7 +1731,12 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
         if hasattr(request, 'context'):  # SSLSocket
             from ssl import SSLSocket
             if isinstance(request, SSLSocket):  # pyright
+                previous_timeout = request.gettimeout()
                 try:
+                    # Without a timeout, a client that opens the connection and never sends a ClientHello
+                    # blocks this worker forever, and `restapi.thread_pool_size`. Such clients are enough
+                    # to make the REST API stop answering until Patroni is restarted.
+                    request.settimeout(self.__handshake_timeout)
                     request.do_handshake()
                 except OSError as e:
                     # The client may reset the connection (or otherwise fail the TLS handshake, e.g.
@@ -1717,6 +1748,7 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
                                  client_address[0], client_address[1], e)
                     self.shutdown_request(request)
                     return
+                request.settimeout(previous_timeout)
         super(RestApiServer, self).process_request_thread(request, client_address)
 
     def process_request(self, request: Union[socket.socket, Tuple[bytes, socket.socket]],
@@ -1824,6 +1856,8 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
 
         self.__allowlist = tuple(self._build_allowlist(config.get('allowlist')))
         self.__allowlist_include_members = config.get('allowlist_include_members')
+        self.__handshake_timeout = self._parse_timeout(config, 'handshake_timeout', 2)
+        self.request_timeout = self._parse_timeout(config, 'request_timeout', 5)
 
         ssl_options = {n: config[n] for n in ('certfile', 'keyfile', 'keyfile_password',
                                               'cafile', 'ciphers') if n in config}
@@ -1843,6 +1877,22 @@ class RestApiServer(ThreadingMixIn, HTTPServer):
         if TYPE_CHECKING:  # pragma: no cover
             assert isinstance(self.__listen, str)
         self.connection_string = uri(self.__protocol, config.get('connect_address') or self.__listen, 'patroni')
+
+    @staticmethod
+    def _parse_timeout(config: Dict[str, Any], name: str, default: int) -> int:
+        """Get the value of the *name* timeout, in seconds.
+
+        :param config: dictionary representing values under the ``restapi`` configuration section.
+        :param name: name of the timeout setting in *config*.
+        :param default: value to be used if *name* is absent or invalid.
+
+        :returns: value of ``restapi.<name>``, never below one second.
+        """
+        try:
+            return max(1, int(config.get(name, default)))
+        except Exception as e:
+            logger.warning('Failed to parse restapi.%s value "%s": %r', name, config.get(name), e)
+            return default
 
     def handle_error(self, request: Union[socket.socket, Tuple[bytes, socket.socket]],
                      client_address: Tuple[str, int]) -> None:

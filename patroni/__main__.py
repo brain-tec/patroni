@@ -132,11 +132,16 @@ class Patroni(AbstractPatroniDaemon, Tags):
     def ensure_unique_name(self, cluster: 'Cluster') -> None:
         """A helper method to prevent splitbrain from operator naming error.
 
+        .. note::
+            The check is skipped with the Kubernetes DCS: Pod names are unique, and the member record is a Pod
+            annotation without TTL, so the ``api_url`` in it may be stale and point to another node after a K8s
+            node reboot.
+
         :param cluster: a PostgreSQL or MPP implementation of :class:`Cluster`.
         """
         from patroni.dcs import Member
 
-        if not cluster:
+        if not cluster or self.dcs.__class__.__name__ == 'Kubernetes':
             return
         member = cluster.get_member(self.config['name'], False)
         if not isinstance(member, Member):
@@ -177,7 +182,8 @@ class Patroni(AbstractPatroniDaemon, Tags):
             if local:
                 self._tags = self._get_tags()
                 self.request.reload_config(self.config)
-            if local or sighup and self.api.reload_local_certificate():
+            received_new_cert = sighup and self.api.reload_local_certificate()
+            if local or received_new_cert:
                 self.api.reload_config(self.config['restapi'])
             self.watchdog.reload_config(self.config)
             self.postgresql.reload_config(self.config['postgresql'], sighup)
