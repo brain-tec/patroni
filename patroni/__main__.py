@@ -101,13 +101,17 @@ class Patroni(AbstractPatroniDaemon, ClusterSite, Tags):
     def _watchdog_timeout(self) -> None:
         """Request immediate PostgreSQL shutdown without running the normal shutdown hooks."""
         logger.critical('Watchdog thread expired, requesting immediate PostgreSQL shutdown and terminating Patroni')
-        postmaster = self.postgresql.is_running()
-        if postmaster is not None:
-            postmaster.signal_stop('immediate', self.postgresql.pgcommand('pg_ctl'))
-        # os._exit() discards records still queued for the logger thread
-        deadline = time.monotonic() + 1
-        while self.logger.queue_size and time.monotonic() < deadline:
-            time.sleep(0.1)
+        try:
+            postmaster = self.postgresql.is_running()
+            if postmaster is not None and \
+                    postmaster.signal_stop('immediate', self.postgresql.pgcommand('pg_ctl')) is False:
+                # A primary left running after Patroni exits would keep accepting writes after the leader key expires.
+                logger.critical('Could not request immediate shutdown, killing PostgreSQL')
+                postmaster.signal_kill()
+        except Exception:
+            logger.exception('Failed to stop PostgreSQL after watchdog thread expiry')
+        # os._exit() discards records not yet written by the logger thread
+        self.logger.flush(1)
 
     def ensure_dcs_access(self, sleep_time: int = 5) -> 'Cluster':
         """Continuously attempt to retrieve cluster from DCS with delay.
@@ -204,6 +208,10 @@ class Patroni(AbstractPatroniDaemon, ClusterSite, Tags):
             if local or received_new_cert:
                 self.api.reload_config(self.config['restapi'])
             self.watchdog.reload_config(self.config)
+            if self.watchdog.needs_immediate_keepalive:
+                # Not every DCS starts the next cycle right away when the TTL changes, so the HA loop would sleep for
+                # the new loop_wait while the watchdog is still armed with the timeout of the previous configuration.
+                self.ha.wakeup()
             self._last_effective_role = ROLE_CONFIG_SUFFIX_MAP.get(self.postgresql.role)
             self._last_effective_pg_config = \
                 self.config.build_effective_postgresql_configuration(self.postgresql.role)
@@ -287,6 +295,8 @@ class Patroni(AbstractPatroniDaemon, ClusterSite, Tags):
             self.ha.shutdown()
         except Exception:
             logger.exception('Exception during Ha.shutdown')
+        # The watchdog is still armed only if PostgreSQL was not stopped, e.g. because the stop request failed.
+        self.watchdog.wait_for_thread_expiry()
 
         thread_pool.get_executor().shutdown(wait=False)
 
