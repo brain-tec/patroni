@@ -100,10 +100,13 @@ class Watchdog(object):
             if self.config.mode == MODE_REQUIRED and self.impl.is_null:
                 logger.error("Configuration requires a watchdog, but watchdog is not supported on this platform.")
                 sys.exit(1)
+        # Activation in required mode failed because of a too long timeout of the device, see is_healthy
+        self._unsafe_timeout = False
 
     @synchronized
     def reload_config(self, config: Config) -> None:
         self.config = WatchdogConfig(config)
+        self._unsafe_timeout = False
         # Turning a watchdog off can always be done immediately
         if self.config.mode == MODE_OFF:
             if self.active:
@@ -142,6 +145,8 @@ class Watchdog(object):
         except WatchdogError as e:
             log = logger.warning if self.config.mode == MODE_REQUIRED else logger.debug
             log("Could not activate %s: %s", self.impl.describe(), e)
+            # The device is armed if open() succeeded, but _set_timeout() failed
+            self._disable()
             self.impl = NullWatchdog()
             actual_timeout = self.impl.get_timeout()
 
@@ -156,6 +161,8 @@ class Watchdog(object):
                 else:
                     logger.error("Configuration requires watchdog, but a safe watchdog timeout %s could"
                                  " not be configured. Watchdog timeout is %s.", self.config.timeout, actual_timeout)
+                    # Otherwise the node would keep winning leader races only to give up the leader key again
+                    self._unsafe_timeout = True
                 return False
             else:
                 if not self.impl.is_null:
@@ -200,6 +207,9 @@ class Watchdog(object):
                 self.impl.keepalive()
                 logger.warning("Watchdog implementation can't be disabled. System will reboot after "
                                "%s seconds when watchdog times out.", self.impl.get_timeout())
+        except WatchdogError as e:
+            logger.error("Error while disabling watchdog: %s", e)
+        try:
             self.impl.close()
         except WatchdogError as e:
             logger.error("Error while disabling watchdog: %s", e)
@@ -238,7 +248,7 @@ class Watchdog(object):
     def is_healthy(self) -> bool:
         if self.config.mode != MODE_REQUIRED:
             return True
-        return self.config.timing_slack >= 0 and self.impl.is_healthy
+        return self.config.timing_slack >= 0 and not self._unsafe_timeout and self.impl.is_healthy
 
 
 class WatchdogBase(abc.ABC):
