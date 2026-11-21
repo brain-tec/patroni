@@ -7,6 +7,7 @@ from patroni.collections import CaseInsensitiveSet
 from patroni.dcs import Cluster, ClusterConfig, Leader, Member, Status, SyncState
 from patroni.postgresql import Postgresql, PostgresqlState
 from patroni.postgresql.config import ConfigHandler
+from patroni.postgresql.misc import PostgresqlRole
 from patroni.postgresql.slots import SlotsHandler
 from patroni.utils import SyncCrossSiteMode
 
@@ -104,6 +105,28 @@ class TestSync(BaseTestPostgresql):
                              ('quorum', 1, CaseInsensitiveSet([self.me.name, self.leadermem.name]),
                               CaseInsensitiveSet([self.me.name, self.leadermem.name]),
                               CaseInsensitiveSet([self.leadermem.name, self.me.name])))
+
+    @patch('time.sleep', Mock())
+    def test_current_state_after_repromote(self):
+        self.cluster.config.data['synchronous_mode'] = 'quorum'
+        global_config.update(self.cluster)
+        a, b = self.leadermem.name, self.me.name
+        state = {'synchronous_standby_names': 'ANY 1 ({0},"{1}")'.format(a, b), 'synchronous_commit': 'on'}
+        with patch.object(Postgresql, '_cluster_info_state_get', side_effect=lambda name: state[name]), \
+                patch.object(Postgresql, 'last_operation', Mock(return_value=1)) as mock_last_operation:
+            state['pg_stat_replication'] = [
+                {'pid': 100, 'application_name': a, 'sync_state': 'quorum', 'flush_lsn': 1},
+                {'pid': 101, 'application_name': b, 'sync_state': 'quorum', 'flush_lsn': 1}]
+            self.assertEqual(self.s.current_state(self.cluster).sync_confirmed, CaseInsensitiveSet([a, b]))
+
+            # demoted and promoted again, synchronous_standby_names set before promote has the same value
+            self.p.set_role(PostgresqlRole.REPLICA)
+            self.p.set_role(PostgresqlRole.PROMOTED)
+            mock_last_operation.return_value = 3
+            state['pg_stat_replication'] = [
+                {'pid': 200, 'application_name': a, 'sync_state': 'quorum', 'flush_lsn': 2},
+                {'pid': 201, 'application_name': b, 'sync_state': 'quorum', 'flush_lsn': 3}]
+            self.assertEqual(self.s.current_state(self.cluster).sync_confirmed, CaseInsensitiveSet([b]))
 
     @patch.object(Postgresql, 'last_operation', Mock(return_value=1))
     def test_current_state_cascading(self):
@@ -432,3 +455,24 @@ class TestSync(BaseTestPostgresql):
         with patch.object(Postgresql, "_cluster_info_state_get", side_effect=['', 'remote_apply', pg_stat_replication]):
             self.assertEqual(self.s.current_state(cluster), ('off', 0, CaseInsensitiveSet(), CaseInsensitiveSet(),
                                                              CaseInsensitiveSet([anotherlocal.name, remote.name])))
+
+        # In quorum mode, balanced selection keeps promotable replicas ahead of nofailover replicas.
+        self.p._site = 'dc1'
+        leader = Member(0, 'leader', 28, {'state': PostgresqlState.RUNNING, 'site': 'dc1'})
+        local = Member(0, 'local', 28, {'state': PostgresqlState.RUNNING, 'site': 'dc1'})
+        remote = Member(0, 'remote', 28, {'state': PostgresqlState.RUNNING, 'site': 'dc2',
+                                          'tags': {'nofailover': True}})
+        config = ClusterConfig(1, {'synchronous_mode': 'quorum', 'synchronous_cross_site': 'balanced',
+                                   'synchronous_node_count': 1}, 1)
+        cluster = Cluster(True, config, Leader(-1, 28, leader), Status.empty(), [leader, local, remote], None,
+                          SyncState(0, leader.name, None, 0, SyncCrossSiteMode.BALANCED), None, None, None)
+        global_config.update(cluster)
+        pg_stat_replication = [
+            {'pid': 100, 'application_name': remote.name, 'sync_state': 'quorum', 'flush_lsn': 1, 'replay_lsn': 1},
+            {'pid': 101, 'application_name': local.name, 'sync_state': 'quorum', 'flush_lsn': 1, 'replay_lsn': 1}]
+
+        with patch.object(Postgresql, "_cluster_info_state_get",
+                          side_effect=['', 'remote_apply', pg_stat_replication]):
+            state = self.s.current_state(cluster)
+
+        self.assertEqual(state.active, CaseInsensitiveSet([local.name]))

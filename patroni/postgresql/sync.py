@@ -299,6 +299,16 @@ class SyncHandler(object):
 
     def __init__(self, postgresql: 'Postgresql') -> None:
         self._postgresql = postgresql
+        self.reset_state()
+
+    def reset_state(self) -> None:
+        """Forget everything known about ``synchronous_standby_names`` and replicas.
+
+        Must be called when the node stops being a primary. Otherwise values cached during the previous primary
+        tenure would be trusted after the next promotion. For example, if ``synchronous_standby_names`` set before
+        promote is equal to the last value observed by the former primary, replicas would be counted as synchronous
+        without reaching the WAL position of the new primary.
+        """
         self._synchronous_standby_names = ''  # last known value of synchronous_standby_names
         self._ssn_data = deepcopy(_EMPTY_SSN)
         self._primary_flush_lsn = 0
@@ -419,6 +429,8 @@ END;$$""")
             selection_order = sorted_replicas
         elif cross_site_mode == SyncCrossSiteMode.BALANCED:
             selection_order = self.pick_replicas_site_balanced(self._postgresql.site, sorted_replicas)
+            if global_config.is_quorum_commit_mode:
+                selection_order = sorted(selection_order, key=lambda x: x.nofailover)
         elif cross_site_mode in (SyncCrossSiteMode.REMOTE_ONLY, SyncCrossSiteMode.PREFER_REMOTE):
             selection_order = remote_replicas
             if cross_site_mode == SyncCrossSiteMode.PREFER_REMOTE:
